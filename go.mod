@@ -2,7 +2,7 @@ module k-tts
 
 go 1.25.0
 
-require github.com/playwright-community/playwright-go v0.5200.0
+require cloud.google.com/go/texttospeech v1.13.0
 
 require (
 	cloud.google.com/go v0.120.0 // indirect
@@ -10,13 +10,9 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	cloud.google.com/go/longrunning v0.6.7 // indirect
-	cloud.google.com/go/texttospeech v1.13.0 // indirect
-	github.com/deckarep/golang-set/v2 v2.7.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect

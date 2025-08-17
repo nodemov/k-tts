@@ -13,13 +13,29 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
 )
 
-// แบ่งข้อความเป็นส่วนย่อยสำหร		// แบ่งข้อความเป็นส่วนย่อย (เพิ่มขนาดให้เหมาะสมกับภาษาไทย)
+// โครงสร้างข้อมูลสำหรับงานแต่ละไฟล์
+type TTSJob struct {
+	ID         int
+	FilePath   string
+	OutputPath string
+	Text       string
+}
+
+// โครงสร้างข้อมูลสำหรับผลลัพธ์
+type TTSResult struct {
+	Job     TTSJob
+	Success bool
+	Error   error
+	Size    int64
+}
+
 // แบ่งข้อความเป็นส่วนย่อยสำหรับ Google Translate TTS
 func splitText(text string, maxLen int) []string {
 	runes := []rune(text)
@@ -418,24 +434,24 @@ func enhanceAudioQuality(inputFile, outputFile string) error {
 	return nil
 }
 
-// ประมวลผลไฟล์เดียวด้วย Google Translate TTS
-func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) {
-	fmt.Printf("🔄 ประมวลผล: %s\n", filename)
+// ประมวลผลไฟล์เดียวด้วย Google Translate TTS สำหรับ multi-worker
+func processFileWithGoogleTTSWorker(job TTSJob, workerTempDir string) ([]string, error) {
+	fmt.Printf("🔄 Worker กำลังประมวลผล: %s\n", filepath.Base(job.FilePath))
 
 	// ทำความสะอาดข้อความก่อนประมวลผล
-	cleanedText := cleanTextForTTS(text)
+	cleanedText := cleanTextForTTS(job.Text)
 	if cleanedText == "" {
 		return nil, fmt.Errorf("ไม่มีข้อความที่สามารถอ่านได้หลังจากทำความสะอาด")
 	}
 
 	// แบ่งข้อความเป็นส่วนย่อย (เพิ่มขนาดให้เหมาะสมกับภาษาไทย)
-	parts := splitText(cleanedText, 150) // เพิ่มจาก 80 เป็น 150 เพื่อลดจำนวนส่วน
-	fmt.Printf("📑 แบ่งข้อความเป็น %d ส่วน\n", len(parts))
+	parts := splitText(cleanedText, 150)
+	fmt.Printf("📑 ไฟล์ %s แบ่งเป็น %d ส่วน\n", filepath.Base(job.FilePath), len(parts))
 
 	var audioFiles []string
 
 	for i, part := range parts {
-		fmt.Printf("🎵 กำลังสร้างเสียงส่วนที่ %d/%d...\n", i+1, len(parts))
+		fmt.Printf("🎵 Worker กำลังสร้างเสียง %s ส่วน %d/%d...\n", filepath.Base(job.FilePath), i+1, len(parts))
 
 		// เข้ารหัส URL
 		encodedText := url.QueryEscape(part)
@@ -444,7 +460,7 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 		// สร้าง HTTP request พร้อม headers
 		req, err := http.NewRequest("GET", ttsURL, nil)
 		if err != nil {
-			fmt.Printf("⚠️ ไม่สามารถสร้าง request ส่วนที่ %d: %s\n", i+1, err.Error())
+			fmt.Printf("⚠️ Worker: ไม่สามารถสร้าง request %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
 			continue
 		}
 
@@ -456,13 +472,13 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
-			fmt.Printf("⚠️ ไม่สามารถดาวน์โหลดเสียงส่วนที่ %d: %s\n", i+1, err.Error())
+			fmt.Printf("⚠️ Worker: ไม่สามารถดาวน์โหลดเสียง %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
 			continue
 		}
 
 		// ตรวจสอบ status code
 		if resp.StatusCode != 200 {
-			fmt.Printf("⚠️ ได้รับ status code %d สำหรับส่วนที่ %d\n", resp.StatusCode, i+1)
+			fmt.Printf("⚠️ Worker: ได้รับ status code %d สำหรับ %s ส่วน %d\n", resp.StatusCode, filepath.Base(job.FilePath), i+1)
 			resp.Body.Close()
 			continue
 		}
@@ -471,40 +487,40 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 		audioData, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			fmt.Printf("⚠️ ไม่สามารถอ่านข้อมูลเสียงส่วนที่ %d: %s\n", i+1, err.Error())
+			fmt.Printf("⚠️ Worker: ไม่สามารถอ่านข้อมูลเสียง %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
 			continue
 		}
 
 		// ตรวจสอบว่าได้ไฟล์เสียงจริงๆ
 		if len(audioData) < 1000 || strings.Contains(string(audioData[:100]), "<html") {
-			fmt.Printf("⚠️ ได้รับข้อมูลที่ไม่ใช่เสียงสำหรับส่วนที่ %d\n", i+1)
+			fmt.Printf("⚠️ Worker: ได้รับข้อมูลที่ไม่ใช่เสียงสำหรับ %s ส่วน %d\n", filepath.Base(job.FilePath), i+1)
 			continue
 		}
 
-		// บันทึกไฟล์ส่วนย่อยใน tempDir
-		tempFilename := filepath.Join(tempDir, fmt.Sprintf("temp_part_%d.mp3", i+1))
+		// บันทึกไฟล์ส่วนย่อยใน workerTempDir
+		tempFilename := filepath.Join(workerTempDir, fmt.Sprintf("temp_part_%d.mp3", i+1))
 		err = os.WriteFile(tempFilename, audioData, 0644)
 		if err != nil {
-			fmt.Printf("⚠️ ไม่สามารถบันทึกไฟล์ส่วนที่ %d: %s\n", i+1, err.Error())
+			fmt.Printf("⚠️ Worker: ไม่สามารถบันทึกไฟล์ %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
 			continue
 		}
 
 		audioFiles = append(audioFiles, tempFilename)
-		fmt.Printf("✅ บันทึกส่วนที่ %d สำเร็จ (%.1f KB)\n", i+1, float64(len(audioData))/1024)
+		fmt.Printf("✅ Worker: บันทึก %s ส่วน %d สำเร็จ (%.1f KB)\n", filepath.Base(job.FilePath), i+1, float64(len(audioData))/1024)
 
-		// รอระหว่างการดาวน์โหลด
-		time.Sleep(1 * time.Second)
+		// รอระหว่างการดาวน์โหลดเพื่อไม่ให้ถูก rate limit
+		time.Sleep(800 * time.Millisecond)
 	}
 
 	return audioFiles, nil
 }
 
-// ประมวลผลไฟล์เดียวด้วย Google Cloud TTS
-func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, filename, text, outputPath string) error {
-	fmt.Printf("🔄 ประมวลผล: %s ด้วย Google Cloud TTS\n", filename)
+// ประมวลผลไฟล์เดียวด้วย Google Cloud TTS สำหรับ multi-worker
+func processFileWithCloudTTSWorker(client *texttospeech.Client, ctx context.Context, job TTSJob) error {
+	fmt.Printf("🔄 Worker กำลังประมวลผล: %s ด้วย Google Cloud TTS\n", filepath.Base(job.FilePath))
 
 	// ทำความสะอาดข้อความก่อนประมวลผล
-	cleanedText := cleanTextForTTS(text)
+	cleanedText := cleanTextForTTS(job.Text)
 	if cleanedText == "" {
 		return fmt.Errorf("ไม่มีข้อความที่สามารถอ่านได้หลังจากทำความสะอาด")
 	}
@@ -521,29 +537,29 @@ func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, f
 		},
 		AudioConfig: &texttospeechpb.AudioConfig{
 			AudioEncoding:   texttospeechpb.AudioEncoding_MP3,
-			SampleRateHertz: 48000, // เพิ่ม sample rate เป็น 48kHz
+			SampleRateHertz: 48000,
 			SpeakingRate:    1.0,
 			Pitch:           0.0,
-			VolumeGainDb:    2.0, // เพิ่ม volume เล็กน้อย
+			VolumeGainDb:    2.0,
 		},
 	}
 
 	// เรียก API
-	fmt.Println("🎙️ กำลังสร้างเสียงด้วย Google Cloud TTS...")
+	fmt.Printf("🎙️ Worker กำลังสร้างเสียง %s ด้วย Google Cloud TTS...\n", filepath.Base(job.FilePath))
 	resp, err := client.SynthesizeSpeech(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ไม่สามารถสร้างเสียงได้: %v", err)
 	}
 
 	// บันทึกไฟล์ชั่วคราว
-	tempFile := outputPath + ".temp.mp3"
+	tempFile := job.OutputPath + ".temp.mp3"
 	err = os.WriteFile(tempFile, resp.AudioContent, 0644)
 	if err != nil {
 		return fmt.Errorf("ไม่สามารถบันทึกไฟล์เสียงชั่วคราวได้: %v", err)
 	}
 
 	// ปรับปรุงคุณภาพเสียง
-	err = enhanceAudioQuality(tempFile, outputPath)
+	err = enhanceAudioQuality(tempFile, job.OutputPath)
 	if err != nil {
 		os.Remove(tempFile)
 		return fmt.Errorf("ไม่สามารถปรับปรุงคุณภาพเสียงได้: %v", err)
@@ -554,23 +570,114 @@ func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, f
 	return nil
 }
 
+// TTS Worker function
+func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, client *texttospeech.Client, ctx context.Context, useCloudTTS bool, audioSpeed float64) {
+	fmt.Printf("🚀 Worker %d เริ่มทำงาน\n", workerID)
+
+	for job := range jobs {
+		fmt.Printf("👷 Worker %d รับงาน: %s\n", workerID, filepath.Base(job.FilePath))
+
+		// สร้าง temp directory สำหรับ worker นี้
+		workerTempDir := filepath.Join("output", fmt.Sprintf("temp_worker_%d", workerID))
+		err := ensureDir(workerTempDir)
+		if err != nil {
+			results <- TTSResult{Job: job, Success: false, Error: fmt.Errorf("ไม่สามารถสร้าง temp directory: %v", err)}
+			continue
+		}
+
+		var processingError error
+
+		if useCloudTTS && client != nil {
+			// ใช้ Google Cloud TTS
+			err = processFileWithCloudTTSWorker(client, ctx, job)
+			if err != nil {
+				fmt.Printf("❌ Worker %d: Google Cloud TTS ล้มเหลว: %s\n", workerID, err.Error())
+				// fallback ไป Google Translate TTS
+				audioFiles, err2 := processFileWithGoogleTTSWorker(job, workerTempDir)
+				if err2 != nil || len(audioFiles) == 0 {
+					processingError = fmt.Errorf("cloud TTS และ Translate TTS ล้มเหลวทั้งคู่: %v, %v", err, err2)
+				} else {
+					// รวมไฟล์เสียง
+					err = combineAudioFiles(workerTempDir, job.OutputPath)
+					if err != nil {
+						processingError = fmt.Errorf("ไม่สามารถรวมไฟล์เสียงได้: %v", err)
+					}
+				}
+			}
+
+			// ปรับความเร็วสำหรับ Cloud TTS
+			if processingError == nil {
+				tempSpeedFile := job.OutputPath + ".speed.mp3"
+				err = adjustAudioSpeed(job.OutputPath, tempSpeedFile, audioSpeed)
+				if err == nil {
+					os.Rename(tempSpeedFile, job.OutputPath)
+					fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.1fx)\n", workerID, audioSpeed)
+				} else {
+					fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
+				}
+			}
+		} else {
+			// ใช้ Google Translate TTS
+			audioFiles, err := processFileWithGoogleTTSWorker(job, workerTempDir)
+			if err != nil || len(audioFiles) == 0 {
+				processingError = fmt.Errorf("google Translate TTS ล้มเหลว: %v", err)
+			} else {
+				// รวมไฟล์เสียง
+				fmt.Printf("🔗 Worker %d: กำลังรวมไฟล์เสียง %s...\n", workerID, filepath.Base(job.FilePath))
+				err = combineAudioFiles(workerTempDir, job.OutputPath)
+				if err != nil {
+					processingError = fmt.Errorf("ไม่สามารถรวมไฟล์เสียงได้: %v", err)
+				} else {
+					// ปรับความเร็วไฟล์เสียง
+					err = adjustAudioSpeed(job.OutputPath, job.OutputPath, audioSpeed)
+					if err != nil {
+						fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
+					} else {
+						fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.1fx)\n", workerID, audioSpeed)
+					}
+				}
+			}
+		}
+
+		// ลบไฟล์ temp ของ worker นี้
+		cleanTempFolder(workerTempDir)
+		os.Remove(workerTempDir)
+
+		// ส่งผลลัพธ์
+		var fileSize int64 = 0
+		if processingError == nil {
+			if info, err := os.Stat(job.OutputPath); err == nil {
+				fileSize = info.Size()
+				fmt.Printf("✅ Worker %d: เสร็จสิ้น %s (%.1f KB)\n", workerID, filepath.Base(job.FilePath), float64(fileSize)/1024)
+			}
+		} else {
+			fmt.Printf("❌ Worker %d: ล้มเหลว %s: %s\n", workerID, filepath.Base(job.FilePath), processingError.Error())
+		}
+
+		results <- TTSResult{
+			Job:     job,
+			Success: processingError == nil,
+			Error:   processingError,
+			Size:    fileSize,
+		}
+	}
+
+	fmt.Printf("🏁 Worker %d เสร็จสิ้นงาน\n", workerID)
+}
+
 func main() {
-	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.4 = เร็sวขึ้น 40%)
-	// ตอนนี้รองรับค่าสูงกว่า 2.0 ได้แล้ว
+	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.4 = เร็วขึ้น 40%)
 	const AUDIO_SPEED_MULTIPLIER = 1.6
+	// จำนวน workers (จำนวนไฟล์ที่ประมวลผลพร้อมกัน)
+	const NUM_WORKERS = 4
+
+	fmt.Printf("🚀 เริ่มต้นระบบ Multi-Worker TTS (%d workers)\n", NUM_WORKERS)
 
 	// สร้าง folders ที่จำเป็น
 	outputDir := "output"
-	tempDir := filepath.Join(outputDir, "temp")
-
 	err := ensureDir(outputDir)
 	if err != nil {
 		panic("ไม่สามารถสร้าง output folder: " + err.Error())
-	}
-
-	err = ensureDir(tempDir)
-	if err != nil {
-		panic("ไม่สามารถสร้าง temp folder: " + err.Error())
 	}
 
 	// หาไฟล์ข้อความทั้งหมดใน chapters
@@ -600,10 +707,9 @@ func main() {
 		fmt.Println("⚠️ ไม่สามารถเชื่อมต่อ Google Cloud TTS, ใช้ Google Translate TTS แทน")
 	}
 
-	// ประมวลผลแต่ละไฟล์
+	// อ่านไฟล์ทั้งหมดและสร้าง jobs
+	var jobs []TTSJob
 	for i, file := range files {
-		fmt.Printf("\n🎯 กำลังประมวลผลไฟล์ %d/%d: %s\n", i+1, len(files), filepath.Base(file))
-
 		// อ่านเนื้อหาไฟล์
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -617,84 +723,108 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("📊 จำนวนอักษร: %d\n", len([]rune(text)))
-
 		// สร้างชื่อไฟล์ output
 		baseName := strings.TrimSuffix(filepath.Base(file), ".txt")
 		outputFile := filepath.Join(outputDir, baseName+".mp3")
 
-		if useCloudTTS {
-			// ใช้ Google Cloud TTS
-			err = processFileWithCloudTTS(client, ctx, baseName, text, outputFile)
-			if err != nil {
-				fmt.Printf("❌ Google Cloud TTS ล้มเหลว: %s\n", err.Error())
-				fmt.Println("🔄 เปลี่ยนไปใช้ Google Translate TTS...")
-				useCloudTTS = false
-			} else {
-				// สำหรับ Cloud TTS ให้ปรับความเร็วด้วยคุณภาพสูง
-				tempSpeedFile := outputFile + ".speed.mp3"
-				err = adjustAudioSpeed(outputFile, tempSpeedFile, AUDIO_SPEED_MULTIPLIER)
-				if err == nil {
-					os.Rename(tempSpeedFile, outputFile)
-					fmt.Printf("⚡ ปรับความเร็วเสร็จสิ้น (%.1fx)\n", AUDIO_SPEED_MULTIPLIER)
-				} else {
-					fmt.Printf("⚠️ ไม่สามารถปรับความเร็วได้: %s\n", err.Error())
-				}
-
-				if info, err := os.Stat(outputFile); err == nil {
-					fmt.Printf("✅ เสร็จสิ้น → %s (%.1f KB)\n", outputFile, float64(info.Size())/1024)
-				}
-				continue
-			}
+		job := TTSJob{
+			ID:         i + 1,
+			FilePath:   file,
+			OutputPath: outputFile,
+			Text:       text,
 		}
+		jobs = append(jobs, job)
+	}
 
-		if !useCloudTTS {
-			// ใช้ Google Translate TTS
-			audioFiles, err := processFileWithGoogleTTS(baseName, text, tempDir)
-			if err != nil || len(audioFiles) == 0 {
-				fmt.Printf("❌ ไม่สามารถประมวลผล %s ได้\n", file)
-				continue
-			}
+	if len(jobs) == 0 {
+		fmt.Println("❌ ไม่มีไฟล์ที่สามารถประมวลผลได้")
+		return
+	}
 
-			// รวมไฟล์เสียง
-			fmt.Println("🔗 กำลังรวมไฟล์เสียง...")
-			err = combineAudioFiles(tempDir, outputFile)
-			if err != nil {
-				fmt.Printf("❌ ไม่สามารถรวมไฟล์เสียงได้: %s\n", err.Error())
-				continue
-			}
+	fmt.Printf("🎯 เตรียมประมวลผล %d งาน ด้วย %d workers\n", len(jobs), NUM_WORKERS)
 
-			// แสดงผลลัพธ์
-			if info, err := os.Stat(outputFile); err == nil {
-				fmt.Printf("✅ เสร็จสิ้น → %s (%.1f KB)\n", outputFile, float64(info.Size())/1024)
-			}
+	// สร้าง channels สำหรับการประสานงาน
+	jobsChan := make(chan TTSJob, len(jobs))
+	resultsChan := make(chan TTSResult, len(jobs))
 
-			// ปรับความเร็วไฟล์เสียงสำหรับ Google Translate TTS
-			err = adjustAudioSpeed(outputFile, outputFile, AUDIO_SPEED_MULTIPLIER)
-			if err != nil {
-				fmt.Printf("⚠️ ไม่สามารถปรับความเร็วได้: %s\n", err.Error())
-			} else {
-				fmt.Printf("⚡ ปรับความเร็วเสร็จสิ้น (%.1fx)\n", AUDIO_SPEED_MULTIPLIER)
-			}
+	// เริ่มต้น workers
+	var wg sync.WaitGroup
+	for workerID := 1; workerID <= NUM_WORKERS; workerID++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			ttsWorker(id, jobsChan, resultsChan, client, ctx, useCloudTTS, AUDIO_SPEED_MULTIPLIER)
+		}(workerID)
+	}
 
-			// ลบไฟล์ temp
-			fmt.Println("🗑️  กำลังลบไฟล์ชั่วคราว...")
-			cleanTempFolder(tempDir)
+	// ส่งงานทั้งหมดลง channel
+	startTime := time.Now()
+	for _, job := range jobs {
+		jobsChan <- job
+	}
+	close(jobsChan)
+
+	// รอให้ workers เสร็จสิ้น
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// รับผลลัพธ์
+	var results []TTSResult
+	var successCount, failCount int
+	var totalSize int64
+
+	fmt.Println("\n📊 กำลังรับผลลัพธ์...")
+	for result := range resultsChan {
+		results = append(results, result)
+		if result.Success {
+			successCount++
+			totalSize += result.Size
+			fmt.Printf("✅ เสร็จสิ้น: %s (%.1f KB)\n",
+				filepath.Base(result.Job.FilePath),
+				float64(result.Size)/1024)
+		} else {
+			failCount++
+			fmt.Printf("❌ ล้มเหลว: %s - %s\n",
+				filepath.Base(result.Job.FilePath),
+				result.Error.Error())
 		}
 	}
 
+	duration := time.Since(startTime)
+
+	// แสดงสรุปผลลัพธ์
 	fmt.Printf("\n🎉 ประมวลผลเสร็จสิ้นทั้งหมด!\n")
+	fmt.Printf("⏱️  เวลาที่ใช้: %.1f วินาที\n", duration.Seconds())
+	fmt.Printf("✅ สำเร็จ: %d ไฟล์\n", successCount)
+	fmt.Printf("❌ ล้มเหลว: %d ไฟล์\n", failCount)
 	fmt.Printf("📁 ไฟล์เสียงทั้งหมดอยู่ใน folder: %s\n", outputDir)
+	fmt.Printf("💾 ขนาดไฟล์รวม: %.1f MB\n", float64(totalSize)/(1024*1024))
 
 	// แสดงรายการไฟล์ที่สร้างขึ้น
-	outputPattern := filepath.Join(outputDir, "*.mp3")
-	outputFiles, err := filepath.Glob(outputPattern)
-	if err == nil && len(outputFiles) > 0 {
-		fmt.Println("📄 ไฟล์ที่สร้างขึ้น:")
-		for i, file := range outputFiles {
-			if info, err := os.Stat(file); err == nil {
-				fmt.Printf("   %d. %s (%.1f KB)\n", i+1, filepath.Base(file), float64(info.Size())/1024)
+	if successCount > 0 {
+		fmt.Println("\n📄 ไฟล์ที่สร้างขึ้น:")
+		outputPattern := filepath.Join(outputDir, "*.mp3")
+		outputFiles, err := filepath.Glob(outputPattern)
+		if err == nil && len(outputFiles) > 0 {
+			sort.Strings(outputFiles)
+			for i, file := range outputFiles {
+				if info, err := os.Stat(file); err == nil {
+					fmt.Printf("   %d. %s (%.1f KB)\n", i+1, filepath.Base(file), float64(info.Size())/1024)
+				}
 			}
 		}
 	}
+
+	if failCount > 0 {
+		fmt.Println("\n⚠️  ไฟล์ที่ล้มเหลว:")
+		for _, result := range results {
+			if !result.Success {
+				fmt.Printf("   - %s: %s\n", filepath.Base(result.Job.FilePath), result.Error.Error())
+			}
+		}
+	}
+
+	fmt.Printf("\n🏁 Multi-Worker TTS เสร็จสิ้น!\n")
 }
