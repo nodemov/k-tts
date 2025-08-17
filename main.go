@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +19,7 @@ import (
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
 )
 
+// แบ่งข้อความเป็นส่วนย่อยสำหร		// แบ่งข้อความเป็นส่วนย่อย (เพิ่มขนาดให้เหมาะสมกับภาษาไทย)
 // แบ่งข้อความเป็นส่วนย่อยสำหรับ Google Translate TTS
 func splitText(text string, maxLen int) []string {
 	runes := []rune(text)
@@ -29,24 +30,7 @@ func splitText(text string, maxLen int) []string {
 	var parts []string
 
 	// แบ่งตามประโยค (จุด, อัศเจรีย์, คำถาม)
-	sentences := []string{}
-	current := ""
-
-	for i, r := range runes {
-		current += string(r)
-		if r == '.' || r == '!' || r == '?' || r == '।' {
-			// หาช่องว่างถัดไป
-			if i+1 < len(runes) && runes[i+1] == ' ' {
-				sentences = append(sentences, strings.TrimSpace(current))
-				current = ""
-			}
-		}
-	}
-
-	// เพิ่มส่วนที่เหลือ
-	if strings.TrimSpace(current) != "" {
-		sentences = append(sentences, strings.TrimSpace(current))
-	}
+	sentences := splitIntoSentences(text)
 
 	// รวมประโยคจนกว่าจะถึงขีดจำกัด
 	currentPart := ""
@@ -70,25 +54,176 @@ func splitText(text string, maxLen int) []string {
 		parts = append(parts, strings.TrimSpace(currentPart))
 	}
 
-	// หากยังมีส่วนที่ยาวเกินไป ให้แบ่งต่อ
+	// หากยังมีส่วนที่ยาวเกินไป ให้แบ่งด้วยวิธีอัจฉริยะกว่า
 	var finalParts []string
 	for _, part := range parts {
 		if len([]rune(part)) <= maxLen {
 			finalParts = append(finalParts, part)
 		} else {
-			// แบ่งโดยอักขระ
-			partRunes := []rune(part)
-			for i := 0; i < len(partRunes); i += maxLen {
-				end := i + maxLen
-				if end > len(partRunes) {
-					end = len(partRunes)
-				}
-				finalParts = append(finalParts, string(partRunes[i:end]))
-			}
+			// แบ่งด้วยการหาจุดแบ่งที่เหมาะสม
+			subParts := splitLongText(part, maxLen)
+			finalParts = append(finalParts, subParts...)
 		}
 	}
 
 	return finalParts
+}
+
+// แบ่งข้อความเป็นประโยค
+func splitIntoSentences(text string) []string {
+	var sentences []string
+	runes := []rune(text)
+	current := ""
+
+	for i, r := range runes {
+		current += string(r)
+
+		// จุดจบประโยคภาษาไทยและอังกฤษ
+		if r == '.' || r == '!' || r == '?' || r == '।' || r == '|' {
+			// ตรวจสอบว่าไม่ใช่ทศนิยม (เช่น 3.14)
+			isDecimal := false
+			if r == '.' && i > 0 && i < len(runes)-1 {
+				if isDigit(runes[i-1]) && isDigit(runes[i+1]) {
+					isDecimal = true
+				}
+			}
+
+			if !isDecimal {
+				// หาช่องว่างถัดไป หรือจบข้อความ
+				if i+1 >= len(runes) || runes[i+1] == ' ' || runes[i+1] == '\n' {
+					sentences = append(sentences, strings.TrimSpace(current))
+					current = ""
+				}
+			}
+		}
+	}
+
+	// เพิ่มส่วนที่เหลือ
+	if strings.TrimSpace(current) != "" {
+		sentences = append(sentences, strings.TrimSpace(current))
+	}
+
+	return sentences
+}
+
+// ตรวจสอบว่าเป็นตัวเลขหรือไม่
+func isDigit(r rune) bool {
+	return r >= '0' && r <= '9'
+}
+
+// แบ่งข้อความยาวด้วยการหาจุดแบ่งที่เหมาะสม
+func splitLongText(text string, maxLen int) []string {
+	runes := []rune(text)
+	var parts []string
+
+	start := 0
+	for start < len(runes) {
+		end := start + maxLen
+		if end > len(runes) {
+			end = len(runes)
+		}
+
+		// หาจุดแบ่งที่เหมาะสม
+		if end < len(runes) {
+			// หาช่องว่างย้อนกลับ
+			bestBreak := findBestBreakPoint(runes, start, end)
+			if bestBreak > start {
+				end = bestBreak
+			}
+		}
+
+		part := string(runes[start:end])
+		parts = append(parts, strings.TrimSpace(part))
+		start = end
+
+		// ข้ามช่องว่างที่อาจเหลือ
+		for start < len(runes) && runes[start] == ' ' {
+			start++
+		}
+	}
+
+	return parts
+}
+
+// หาจุดแบ่งที่ดีที่สุด
+func findBestBreakPoint(runes []rune, start, maxEnd int) int {
+	// หาช่องว่างย้อนกลับจากจุดสิ้นสุด
+	for i := maxEnd - 1; i > start; i-- {
+		if runes[i] == ' ' {
+			return i
+		}
+	}
+
+	// หาเครื่องหมายวรรคตอนย้อนกลับ
+	for i := maxEnd - 1; i > start; i-- {
+		r := runes[i]
+		if r == ',' || r == ';' || r == ':' || r == '(' || r == ')' ||
+			r == '[' || r == ']' || r == '{' || r == '}' || r == '"' || r == '\'' {
+			return i + 1 // แบ่งหลังเครื่องหมาย
+		}
+	}
+
+	// หาสระหรือพยัญชนะไทยที่เหมาะสม
+	for i := maxEnd - 1; i > start; i-- {
+		r := runes[i]
+		// ตัวอักษรไทยที่เป็นจุดแบ่งที่ดี
+		if isThaiVowel(r) || isThaiToneMarker(r) {
+			// แบ่งหลังสระหรือวรรณยุกต์
+			if i+1 < maxEnd {
+				return i + 1
+			}
+		}
+	}
+
+	return maxEnd
+}
+
+// ตรวจสอบสระไทย
+func isThaiVowel(r rune) bool {
+	return (r >= 0x0E30 && r <= 0x0E39) || // สระ
+		(r >= 0x0E40 && r <= 0x0E44) || // เ แ โ ใ ไ
+		r == 0x0E2D || r == 0x0E2E // อ ฮ
+}
+
+// ตรวจสอบวรรณยุกต์ไทย
+func isThaiToneMarker(r rune) bool {
+	return r >= 0x0E48 && r <= 0x0E4B // ่ ้ ๊ ๋
+}
+
+// ทำความสะอาดข้อความโดยลบอักขระพิเศษที่ไม่ต้องการให้อ่าน
+func cleanTextForTTS(text string) string {
+	// ลบอักขระพิเศษที่ไม่ต้องการ
+	specialChars := []string{
+		"#", "*", "_", "~", "`", "^", "|", "\\", "/",
+		"[", "]", "{", "}", "<", ">", "@", "$", "%",
+		"&", "+", "=", "§", "¶", "†", "‡", "•", "…",
+	}
+
+	cleaned := text
+	for _, char := range specialChars {
+		cleaned = strings.ReplaceAll(cleaned, char, " ")
+	}
+
+	// ลบเลขบท/หมายเลขที่อยู่ในบรรทัดเดี่ยว (เช่น "1" "2" "บทที่ 1")
+	lines := strings.Split(cleaned, "\n")
+	var filteredLines []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// ข้ามบรรทัดที่มีแต่ตัวเลข หรือ "บทที่ X" หรือ "Chapter X"
+		if trimmed == "" ||
+			regexp.MustCompile(`^(\d+|บทที่\s*\d+|Chapter\s*\d+)$`).MatchString(trimmed) {
+			continue
+		}
+		filteredLines = append(filteredLines, line)
+	}
+
+	cleaned = strings.Join(filteredLines, "\n")
+
+	// ลบช่องว่างที่ซ้ำซ้อน
+	cleaned = regexp.MustCompile(`\s+`).ReplaceAllString(cleaned, " ")
+
+	return strings.TrimSpace(cleaned)
 }
 
 // ตรวจสอบและสร้าง folder
@@ -154,11 +289,11 @@ func combineAudioFiles(tempDir, outputFile string) error {
 
 	if len(files) == 1 {
 		// หากมีไฟล์เดียว ให้คัดลอกไปยัง output
-		data, err := ioutil.ReadFile(files[0])
+		data, err := os.ReadFile(files[0])
 		if err != nil {
 			return err
 		}
-		return ioutil.WriteFile(outputFile, data, 0644)
+		return os.WriteFile(outputFile, data, 0644)
 	}
 
 	// สร้างไฟล์รายการสำหรับ ffmpeg (ใช้ relative path จาก tempDir)
@@ -170,7 +305,7 @@ func combineAudioFiles(tempDir, outputFile string) error {
 		filelistContent.WriteString(fmt.Sprintf("file '%s'\n", filename))
 	}
 
-	err = ioutil.WriteFile(filelistPath, []byte(filelistContent.String()), 0644)
+	err = os.WriteFile(filelistPath, []byte(filelistContent.String()), 0644)
 	if err != nil {
 		return err
 	}
@@ -181,7 +316,19 @@ func combineAudioFiles(tempDir, outputFile string) error {
 		return err
 	}
 
-	cmd := exec.Command("ffmpeg", "-f", "concat", "-safe", "0", "-i", "filelist.txt", "-c", "copy", absOutputFile, "-y")
+	// ใช้ high-quality encoding parameters
+	cmd := exec.Command("ffmpeg",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", "filelist.txt",
+		"-c:a", "libmp3lame", // ใช้ LAME MP3 encoder คุณภาพสูง
+		"-b:a", "320k", // Bitrate 320kbps (คุณภาพสูงสุด)
+		"-ar", "48000", // Sample rate 48kHz
+		"-ac", "2", // Stereo
+		"-af", "volume=1.2,dynaudnorm=p=0.9:s=5", // ปรับ volume และ normalize
+		absOutputFile,
+		"-y")
+
 	cmd.Dir = tempDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -194,12 +341,95 @@ func combineAudioFiles(tempDir, outputFile string) error {
 	return nil
 }
 
+// ปรับความเร็วของไฟล์เสียงด้วย ffmpeg
+func adjustAudioSpeed(inputFile, outputFile string, speed float64) error {
+	// สร้างไฟล์ temp สำหรับการปรับความเร็ว
+	tempFile := inputFile + ".temp.mp3"
+
+	fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.1fx...\n", speed)
+
+	// สร้าง atempo filter สำหรับความเร็วสูง (แบ่งเป็นขั้นๆ หากเกิน 2.0)
+	var audioFilter string
+	if speed <= 2.0 {
+		audioFilter = fmt.Sprintf("atempo=%.2f,dynaudnorm=p=0.9:s=5", speed)
+	} else {
+		// สำหรับความเร็วสูงกว่า 2.0 ต้องใช้ atempo หลายครั้ง
+		// เช่น 2.4x = 1.5 * 1.6
+		firstStep := 1.5
+		secondStep := speed / firstStep
+		if secondStep > 2.0 {
+			// หากยังเกิน 2.0 ให้แบ่งเป็น 3 ขั้น
+			firstStep = 1.4
+			secondStep = 1.5
+			thirdStep := speed / (firstStep * secondStep)
+			audioFilter = fmt.Sprintf("atempo=%.2f,atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep, thirdStep)
+		} else {
+			audioFilter = fmt.Sprintf("atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep)
+		}
+	}
+
+	// ใช้ high-quality speed adjustment
+	cmd := exec.Command("ffmpeg",
+		"-i", inputFile,
+		"-af", audioFilter, // รวม atempo และ dynaudnorm ใน filter เดียว
+		"-c:a", "libmp3lame", // High-quality MP3 encoder
+		"-b:a", "320k", // Maximum bitrate
+		"-ar", "48000", // High sample rate
+		"-ac", "2", // Stereo
+		tempFile,
+		"-y")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// ลบไฟล์ temp หากมีข้อผิดพลาด
+		os.Remove(tempFile)
+		return fmt.Errorf("ffmpeg speed adjustment error: %v\nOutput: %s", err, string(output))
+	}
+
+	// แทนที่ไฟล์เดิมด้วยไฟล์ที่ปรับความเร็วแล้ว
+	err = os.Rename(tempFile, outputFile)
+	if err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ไม่สามารถแทนที่ไฟล์ได้: %v", err)
+	}
+
+	return nil
+}
+
+// เพิ่มฟังก์ชันสำหรับ post-processing เสียงคุณภาพสูง
+func enhanceAudioQuality(inputFile, outputFile string) error {
+	fmt.Println("🎛️ กำลังปรับปรุงคุณภาพเสียง...")
+
+	cmd := exec.Command("ffmpeg",
+		"-i", inputFile,
+		"-c:a", "libmp3lame",
+		"-b:a", "320k",
+		"-ar", "48000",
+		"-ac", "2",
+		"-af", "highpass=f=80,lowpass=f=15000,dynaudnorm=p=0.9:s=5:m=15,volume=1.1", // Filter chain สำหรับปรับปรุงเสียง
+		outputFile,
+		"-y")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg enhancement error: %v\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
 // ประมวลผลไฟล์เดียวด้วย Google Translate TTS
 func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) {
 	fmt.Printf("🔄 ประมวลผล: %s\n", filename)
 
-	// แบ่งข้อความเป็นส่วนย่อย
-	parts := splitText(text, 80)
+	// ทำความสะอาดข้อความก่อนประมวลผล
+	cleanedText := cleanTextForTTS(text)
+	if cleanedText == "" {
+		return nil, fmt.Errorf("ไม่มีข้อความที่สามารถอ่านได้หลังจากทำความสะอาด")
+	}
+
+	// แบ่งข้อความเป็นส่วนย่อย (เพิ่มขนาดให้เหมาะสมกับภาษาไทย)
+	parts := splitText(cleanedText, 150) // เพิ่มจาก 80 เป็น 150 เพื่อลดจำนวนส่วน
 	fmt.Printf("📑 แบ่งข้อความเป็น %d ส่วน\n", len(parts))
 
 	var audioFiles []string
@@ -238,7 +468,7 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 		}
 
 		// อ่านข้อมูลเสียง
-		audioData, err := ioutil.ReadAll(resp.Body)
+		audioData, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			fmt.Printf("⚠️ ไม่สามารถอ่านข้อมูลเสียงส่วนที่ %d: %s\n", i+1, err.Error())
@@ -253,7 +483,7 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 
 		// บันทึกไฟล์ส่วนย่อยใน tempDir
 		tempFilename := filepath.Join(tempDir, fmt.Sprintf("temp_part_%d.mp3", i+1))
-		err = ioutil.WriteFile(tempFilename, audioData, 0644)
+		err = os.WriteFile(tempFilename, audioData, 0644)
 		if err != nil {
 			fmt.Printf("⚠️ ไม่สามารถบันทึกไฟล์ส่วนที่ %d: %s\n", i+1, err.Error())
 			continue
@@ -273,10 +503,16 @@ func processFileWithGoogleTTS(filename, text, tempDir string) ([]string, error) 
 func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, filename, text, outputPath string) error {
 	fmt.Printf("🔄 ประมวลผล: %s ด้วย Google Cloud TTS\n", filename)
 
+	// ทำความสะอาดข้อความก่อนประมวลผล
+	cleanedText := cleanTextForTTS(text)
+	if cleanedText == "" {
+		return fmt.Errorf("ไม่มีข้อความที่สามารถอ่านได้หลังจากทำความสะอาด")
+	}
+
 	// สร้าง request
 	req := &texttospeechpb.SynthesizeSpeechRequest{
 		Input: &texttospeechpb.SynthesisInput{
-			InputSource: &texttospeechpb.SynthesisInput_Text{Text: text},
+			InputSource: &texttospeechpb.SynthesisInput_Text{Text: cleanedText},
 		},
 		Voice: &texttospeechpb.VoiceSelectionParams{
 			LanguageCode: "th-TH",
@@ -284,10 +520,11 @@ func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, f
 			SsmlGender:   texttospeechpb.SsmlVoiceGender_FEMALE,
 		},
 		AudioConfig: &texttospeechpb.AudioConfig{
-			AudioEncoding: texttospeechpb.AudioEncoding_MP3,
-			SpeakingRate:  1.5,
-			Pitch:         0.0,
-			VolumeGainDb:  0.0,
+			AudioEncoding:   texttospeechpb.AudioEncoding_MP3,
+			SampleRateHertz: 48000, // เพิ่ม sample rate เป็น 48kHz
+			SpeakingRate:    1.0,
+			Pitch:           0.0,
+			VolumeGainDb:    2.0, // เพิ่ม volume เล็กน้อย
 		},
 	}
 
@@ -298,16 +535,30 @@ func processFileWithCloudTTS(client *texttospeech.Client, ctx context.Context, f
 		return fmt.Errorf("ไม่สามารถสร้างเสียงได้: %v", err)
 	}
 
-	// บันทึกไฟล์เสียง
-	err = ioutil.WriteFile(outputPath, resp.AudioContent, 0644)
+	// บันทึกไฟล์ชั่วคราว
+	tempFile := outputPath + ".temp.mp3"
+	err = os.WriteFile(tempFile, resp.AudioContent, 0644)
 	if err != nil {
-		return fmt.Errorf("ไม่สามารถบันทึกไฟล์เสียงได้: %v", err)
+		return fmt.Errorf("ไม่สามารถบันทึกไฟล์เสียงชั่วคราวได้: %v", err)
 	}
 
+	// ปรับปรุงคุณภาพเสียง
+	err = enhanceAudioQuality(tempFile, outputPath)
+	if err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ไม่สามารถปรับปรุงคุณภาพเสียงได้: %v", err)
+	}
+
+	// ลบไฟล์ชั่วคราว
+	os.Remove(tempFile)
 	return nil
 }
 
 func main() {
+	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.4 = เร็sวขึ้น 40%)
+	// ตอนนี้รองรับค่าสูงกว่า 2.0 ได้แล้ว
+	const AUDIO_SPEED_MULTIPLIER = 1.6
+
 	// สร้าง folders ที่จำเป็น
 	outputDir := "output"
 	tempDir := filepath.Join(outputDir, "temp")
@@ -380,6 +631,16 @@ func main() {
 				fmt.Println("🔄 เปลี่ยนไปใช้ Google Translate TTS...")
 				useCloudTTS = false
 			} else {
+				// สำหรับ Cloud TTS ให้ปรับความเร็วด้วยคุณภาพสูง
+				tempSpeedFile := outputFile + ".speed.mp3"
+				err = adjustAudioSpeed(outputFile, tempSpeedFile, AUDIO_SPEED_MULTIPLIER)
+				if err == nil {
+					os.Rename(tempSpeedFile, outputFile)
+					fmt.Printf("⚡ ปรับความเร็วเสร็จสิ้น (%.1fx)\n", AUDIO_SPEED_MULTIPLIER)
+				} else {
+					fmt.Printf("⚠️ ไม่สามารถปรับความเร็วได้: %s\n", err.Error())
+				}
+
 				if info, err := os.Stat(outputFile); err == nil {
 					fmt.Printf("✅ เสร็จสิ้น → %s (%.1f KB)\n", outputFile, float64(info.Size())/1024)
 				}
@@ -406,6 +667,14 @@ func main() {
 			// แสดงผลลัพธ์
 			if info, err := os.Stat(outputFile); err == nil {
 				fmt.Printf("✅ เสร็จสิ้น → %s (%.1f KB)\n", outputFile, float64(info.Size())/1024)
+			}
+
+			// ปรับความเร็วไฟล์เสียงสำหรับ Google Translate TTS
+			err = adjustAudioSpeed(outputFile, outputFile, AUDIO_SPEED_MULTIPLIER)
+			if err != nil {
+				fmt.Printf("⚠️ ไม่สามารถปรับความเร็วได้: %s\n", err.Error())
+			} else {
+				fmt.Printf("⚡ ปรับความเร็วเสร็จสิ้น (%.1fx)\n", AUDIO_SPEED_MULTIPLIER)
 			}
 
 			// ลบไฟล์ temp
