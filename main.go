@@ -36,6 +36,8 @@ type TTSResult struct {
 	Size    int64
 }
 
+var googleTranslateTTSURL = "https://translate.google.com/translate_tts"
+
 // แบ่งข้อความเป็นส่วนย่อยสำหรับ Google Translate TTS
 func splitText(text string, maxLen int) []string {
 	runes := []rune(text)
@@ -250,17 +252,6 @@ func ensureDir(path string) error {
 	return nil
 }
 
-// ลบไฟล์ใน folder temp
-func cleanTempFolder(tempDir string) {
-	files, err := filepath.Glob(filepath.Join(tempDir, "*"))
-	if err != nil {
-		return
-	}
-	for _, file := range files {
-		os.Remove(file)
-	}
-}
-
 // ฟังก์ชันสำหรับเรียงลำดับไฟล์ตามหมายเลขที่ฝังในชื่อไฟล์แบบธรรมชาติ (Natural Sorting)
 func sortFilesNaturally(files []string) {
 	// ใช้ regex เพื่อดึงหมายเลขจากชื่อไฟล์ temp_part_*.mp3
@@ -455,13 +446,12 @@ func processFileWithGoogleTTSWorker(job TTSJob, workerTempDir string) ([]string,
 
 		// เข้ารหัส URL
 		encodedText := url.QueryEscape(part)
-		ttsURL := fmt.Sprintf("https://translate.google.com/translate_tts?ie=UTF-8&tl=th&client=tw-ob&q=%s", encodedText)
+		ttsURL := fmt.Sprintf("%s?ie=UTF-8&tl=th&client=tw-ob&q=%s", googleTranslateTTSURL, encodedText)
 
 		// สร้าง HTTP request พร้อม headers
 		req, err := http.NewRequest("GET", ttsURL, nil)
 		if err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถสร้าง request %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return audioFiles, fmt.Errorf("ไม่สามารถสร้าง request %s ส่วน %d: %w", filepath.Base(job.FilePath), i+1, err)
 		}
 
 		// เพิ่ม headers ที่จำเป็น
@@ -472,37 +462,32 @@ func processFileWithGoogleTTSWorker(job TTSJob, workerTempDir string) ([]string,
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถดาวน์โหลดเสียง %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return audioFiles, fmt.Errorf("ไม่สามารถดาวน์โหลดเสียง %s ส่วน %d: %w", filepath.Base(job.FilePath), i+1, err)
 		}
 
 		// ตรวจสอบ status code
 		if resp.StatusCode != 200 {
-			fmt.Printf("⚠️ Worker: ได้รับ status code %d สำหรับ %s ส่วน %d\n", resp.StatusCode, filepath.Base(job.FilePath), i+1)
 			resp.Body.Close()
-			continue
+			return audioFiles, fmt.Errorf("ได้รับ status code %d สำหรับ %s ส่วน %d", resp.StatusCode, filepath.Base(job.FilePath), i+1)
 		}
 
 		// อ่านข้อมูลเสียง
 		audioData, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถอ่านข้อมูลเสียง %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return audioFiles, fmt.Errorf("ไม่สามารถอ่านข้อมูลเสียง %s ส่วน %d: %w", filepath.Base(job.FilePath), i+1, err)
 		}
 
 		// ตรวจสอบว่าได้ไฟล์เสียงจริงๆ
 		if len(audioData) < 1000 || strings.Contains(string(audioData[:100]), "<html") {
-			fmt.Printf("⚠️ Worker: ได้รับข้อมูลที่ไม่ใช่เสียงสำหรับ %s ส่วน %d\n", filepath.Base(job.FilePath), i+1)
-			continue
+			return audioFiles, fmt.Errorf("ได้รับข้อมูลที่ไม่ใช่เสียงสำหรับ %s ส่วน %d", filepath.Base(job.FilePath), i+1)
 		}
 
 		// บันทึกไฟล์ส่วนย่อยใน workerTempDir
 		tempFilename := filepath.Join(workerTempDir, fmt.Sprintf("temp_part_%d.mp3", i+1))
 		err = os.WriteFile(tempFilename, audioData, 0644)
 		if err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถบันทึกไฟล์ %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return audioFiles, fmt.Errorf("ไม่สามารถบันทึกไฟล์ %s ส่วน %d: %w", filepath.Base(job.FilePath), i+1, err)
 		}
 
 		audioFiles = append(audioFiles, tempFilename)
@@ -577,9 +562,8 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 	for job := range jobs {
 		fmt.Printf("👷 Worker %d รับงาน: %s\n", workerID, filepath.Base(job.FilePath))
 
-		// สร้าง temp directory สำหรับ worker นี้
-		workerTempDir := filepath.Join("output", fmt.Sprintf("temp_worker_%d", workerID))
-		err := ensureDir(workerTempDir)
+		// ใช้ temp directory แยกต่อหนึ่งงานเพื่อไม่ให้ไฟล์ค้างจากงานก่อนหน้าปะปนกัน
+		workerTempDir, err := os.MkdirTemp("", fmt.Sprintf("k-tts-worker-%d-", workerID))
 		if err != nil {
 			results <- TTSResult{Job: job, Success: false, Error: fmt.Errorf("ไม่สามารถสร้าง temp directory: %v", err)}
 			continue
@@ -639,9 +623,8 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 			}
 		}
 
-		// ลบไฟล์ temp ของ worker นี้
-		cleanTempFolder(workerTempDir)
-		os.Remove(workerTempDir)
+		// ลบไฟล์ temp ของงานนี้
+		os.RemoveAll(workerTempDir)
 
 		// ส่งผลลัพธ์
 		var fileSize int64 = 0
