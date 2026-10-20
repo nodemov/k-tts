@@ -78,6 +78,47 @@ func CombineAudioFiles(tempDir, outputFile string) ([]string, error) {
 	return files, nil
 }
 
+// ConcatFiles รวมไฟล์ mp3 ตามลำดับใน files เป็น outputFile แบบ stream copy (ไม่ re-encode)
+func ConcatFiles(files []string, outputFile string) error {
+	if len(files) == 0 {
+		return fmt.Errorf("ไม่มีไฟล์ให้รวม")
+	}
+
+	var filelist strings.Builder
+	for _, file := range files {
+		abs, err := filepath.Abs(file)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&filelist, "file '%s'\n", strings.ReplaceAll(abs, "'", `'\''`))
+	}
+
+	listFile, err := os.CreateTemp("", "k-tts-concat-*.txt")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(listFile.Name())
+	if _, err := listFile.WriteString(filelist.String()); err != nil {
+		listFile.Close()
+		return err
+	}
+	if err := listFile.Close(); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("ffmpeg",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listFile.Name(),
+		"-c", "copy",
+		outputFile,
+		"-y")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg concat error: %v\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
 // AtempoFilter สร้าง filter chain ของ atempo (ffmpeg รองรับครั้งละไม่เกิน 2.0x จึงต้องแบ่งเป็นขั้น)
 func AtempoFilter(speed float64) string {
 	if speed <= 2.0 {

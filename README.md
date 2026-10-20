@@ -31,6 +31,7 @@
 k-tts/
 ├── main.go              # ไฟล์หลักของโปรแกรม
 ├── cmd/fetch-chapters/  # ดึงตอนแปลไทยจาก novels DB เป็นไฟล์บท
+├── cmd/combine-audio/   # รวมไฟล์เสียงใน output/ ทีละ N ไฟล์
 ├── go.mod               # Go module dependencies
 ├── chapters/            # โฟลเดอร์สำหรับไฟล์ข้อความต้นฉบับ (.txt)
 ├── output/              # โฟลเดอร์สำหรับไฟล์เสียงที่สร้างขึ้น (.mp3)
@@ -94,6 +95,27 @@ choco install ffmpeg
    go run main.go
    ```
 3. ไฟล์เสียงจะถูกสร้างในโฟลเดอร์ `output/`
+
+### รวมไฟล์เสียงหลายตอนเป็นไฟล์เดียว
+
+เรียง `output/*.mp3` ตามชื่อไฟล์ แล้วรวมทีละ `size` ไฟล์ด้วย ffmpeg (stream copy ไม่ re-encode) ชื่อไฟล์ผลลัพธ์เป็น `<ไฟล์แรก>-<ไฟล์สุดท้าย>.mp3`:
+
+```bash
+go run ./cmd/combine-audio [size] [input_dir] [output_dir]
+```
+
+ค่าเริ่มต้น: `size=10`, `input_dir=output`, `output_dir=<input_dir>/combined`
+
+```bash
+go run ./cmd/combine-audio 10
+# output/0081.mp3 ... output/0100.mp3 ->
+#   output/combined/0081-0090.mp3
+#   output/combined/0091-0100.mp3
+
+go run ./cmd/combine-audio 5 output albums
+```
+
+ถ้าจำนวนไฟล์หารไม่ลงตัว กลุ่มสุดท้ายจะมีไฟล์น้อยกว่า `size` (เช่น `0101-0103.mp3`)
 
 ### ตัวอย่างการใช้งาน
 ```bash
