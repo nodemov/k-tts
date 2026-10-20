@@ -64,7 +64,7 @@ func combineAudioFiles(tempDir, outputFile string) error {
 
 // ปรับความเร็วของไฟล์เสียงด้วย ffmpeg
 func adjustAudioSpeed(inputFile, outputFile string, speed float64) error {
-	fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.1fx...\n", speed)
+	fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.2fx...\n", speed)
 	return tts.AdjustSpeed(inputFile, outputFile, speed)
 }
 
@@ -182,7 +182,7 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 				err = adjustAudioSpeed(job.OutputPath, tempSpeedFile, audioSpeed)
 				if err == nil {
 					os.Rename(tempSpeedFile, job.OutputPath)
-					fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.1fx)\n", workerID, audioSpeed)
+					fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.2fx)\n", workerID, audioSpeed)
 				} else {
 					fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
 				}
@@ -204,7 +204,7 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 					if err != nil {
 						fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
 					} else {
-						fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.1fx)\n", workerID, audioSpeed)
+						fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.2fx)\n", workerID, audioSpeed)
 					}
 				}
 			}
@@ -237,8 +237,8 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 }
 
 func main() {
-	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.4 = เร็วขึ้น 40%)
-	const AUDIO_SPEED_MULTIPLIER = 1.6
+	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.75 = เร็วขึ้น 75%)
+	const AUDIO_SPEED_MULTIPLIER = 1.75
 	// จำนวน workers (จำนวนไฟล์ที่ประมวลผลพร้อมกัน)
 	const NUM_WORKERS = 4
 

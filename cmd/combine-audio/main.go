@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,12 +14,13 @@ import (
 	"k-tts/pkg/tts"
 )
 
-const usage = "usage: go run ./cmd/combine-audio [size] [input_dir] [output_dir]"
+const usage = "usage: go run ./cmd/combine-audio [-speed N] [size] [input_dir] [output_dir]"
 
 type combineOptions struct {
 	size      int
 	inputDir  string
 	outputDir string
+	speed     float64
 }
 
 type group struct {
@@ -45,10 +48,18 @@ func main() {
 
 	groups := groupFiles(files, opts.size)
 	fmt.Printf("found %d files, combining into %d files (%d per file)\n", len(files), len(groups), opts.size)
+	if opts.speed != 1 {
+		fmt.Printf("speeding up combined files by %.2fx\n", opts.speed)
+	}
 	for _, g := range groups {
 		outputFile := filepath.Join(opts.outputDir, g.name+".mp3")
 		if err := tts.ConcatFiles(g.files, outputFile); err != nil {
 			fatal(fmt.Errorf("combine %s: %w", g.name, err))
+		}
+		if opts.speed != 1 {
+			if err := tts.AdjustSpeed(outputFile, outputFile, opts.speed); err != nil {
+				fatal(fmt.Errorf("speed up %s: %w", g.name, err))
+			}
 		}
 		fmt.Printf("  %s (%d files)\n", outputFile, len(g.files))
 	}
@@ -56,6 +67,18 @@ func main() {
 
 func parseArgs(args []string) (combineOptions, error) {
 	opts := combineOptions{size: 10, inputDir: "output"}
+
+	fs := flag.NewFlagSet("combine-audio", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Float64Var(&opts.speed, "speed", 1, "speed multiplier applied after combining (atempo minimum is 0.5)")
+	if err := fs.Parse(args); err != nil {
+		return combineOptions{}, fmt.Errorf("%s\n%v", usage, err)
+	}
+	if opts.speed < 0.5 {
+		return combineOptions{}, fmt.Errorf("%s\nspeed must be >= 0.5", usage)
+	}
+	args = fs.Args()
+
 	if len(args) > 3 {
 		return combineOptions{}, errors.New(usage)
 	}

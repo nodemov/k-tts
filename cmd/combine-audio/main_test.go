@@ -32,13 +32,17 @@ func TestParseArgs(t *testing.T) {
 		want    combineOptions
 		wantErr bool
 	}{
-		{args: nil, want: combineOptions{size: 10, inputDir: "output", outputDir: filepath.Join("output", "combined")}},
-		{args: []string{"5"}, want: combineOptions{size: 5, inputDir: "output", outputDir: filepath.Join("output", "combined")}},
-		{args: []string{"5", "in"}, want: combineOptions{size: 5, inputDir: "in", outputDir: filepath.Join("in", "combined")}},
-		{args: []string{"5", "in", "out"}, want: combineOptions{size: 5, inputDir: "in", outputDir: "out"}},
+		{args: nil, want: combineOptions{size: 10, inputDir: "output", outputDir: filepath.Join("output", "combined"), speed: 1}},
+		{args: []string{"5"}, want: combineOptions{size: 5, inputDir: "output", outputDir: filepath.Join("output", "combined"), speed: 1}},
+		{args: []string{"5", "in"}, want: combineOptions{size: 5, inputDir: "in", outputDir: filepath.Join("in", "combined"), speed: 1}},
+		{args: []string{"5", "in", "out"}, want: combineOptions{size: 5, inputDir: "in", outputDir: "out", speed: 1}},
+		{args: []string{"-speed", "1.5"}, want: combineOptions{size: 10, inputDir: "output", outputDir: filepath.Join("output", "combined"), speed: 1.5}},
+		{args: []string{"-speed=2", "5", "in"}, want: combineOptions{size: 5, inputDir: "in", outputDir: filepath.Join("in", "combined"), speed: 2}},
 		{args: []string{"0"}, wantErr: true},
 		{args: []string{"abc"}, wantErr: true},
 		{args: []string{"1", "2", "3", "4"}, wantErr: true},
+		{args: []string{"-speed", "0.4"}, wantErr: true},
+		{args: []string{"-speed", "fast"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := parseArgs(tt.args)
