@@ -1,0 +1,5 @@
+/data/
+/dsp-wasm/target/
+/ai-service/.venv/
+/ai-service/.pytest_cache/
+__pycache__/

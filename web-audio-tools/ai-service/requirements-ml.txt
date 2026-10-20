@@ -1,0 +1,5 @@
+# Optional models. Install any subset; /health reports what is available.
+-r requirements.txt
+deepfilternet>=0.5.6
+demucs>=4.0.1
+faster-whisper>=1.1

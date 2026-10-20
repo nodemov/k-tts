@@ -1,0 +1,17 @@
+{
+	"name": "Web Audio Tools",
+	"short_name": "AudioTools",
+	"description": "ตัดต่อ ปรับปรุงคุณภาพ และเล่นเอฟเฟกต์เสียงในเบราว์เซอร์",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#12110e",
+	"theme_color": "#12110e",
+	"lang": "th",
+	"icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }],
+	"file_handlers": [
+		{
+			"action": "/editor",
+			"accept": { "audio/*": [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".opus"] }
+		}
+	]
+}
