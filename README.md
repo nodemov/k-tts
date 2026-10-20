@@ -30,6 +30,7 @@
 ```
 k-tts/
 ├── main.go              # ไฟล์หลักของโปรแกรม
+├── cmd/fetch-chapters/  # ดึง content_en จาก PostgreSQL เป็นไฟล์บท
 ├── go.mod               # Go module dependencies
 ├── chapters/            # โฟลเดอร์สำหรับไฟล์ข้อความต้นฉบับ (.txt)
 ├── output/              # โฟลเดอร์สำหรับไฟล์เสียงที่สร้างขึ้น (.mp3)
@@ -37,6 +38,26 @@ k-tts/
 ```
 
 ## 🚀 การติดตั้งและใช้งาน
+
+### ดึงข้อมูลบทจาก PostgreSQL
+
+คำสั่งนี้จะถาม `document_id`, ดึง `content_en` จากตาราง `chunks` โดยเรียงตาม `page_number ASC` และสร้างไฟล์ทุก 200 หน้า เช่น `chapters/1-200.txt` และ `chapters/201-400.txt`:
+
+```bash
+export LOCAL_HOST="192.168.1.16"
+export LOCAL_PORT="5432"
+export LOCAL_USER="kanit"
+export LOCAL_DB="hono_app"
+export LOCAL_PASS="ใส่รหัสผ่าน PostgreSQL ที่นี่"
+
+go run ./cmd/fetch-chapters
+```
+
+หรือส่ง `document_id` เป็นอาร์กิวเมนต์ และเปลี่ยนโฟลเดอร์ปลายทางได้:
+
+```bash
+go run ./cmd/fetch-chapters <document_id> [output_dir]
+```
 
 ### ความต้องการระบบ
 - Go 1.19 หรือสูงกว่า
