@@ -93,6 +93,17 @@ var VoiceFXPresets = []VoiceFX{
 			"acompressor=threshold=-22dB:ratio=2.5:attack=10:release=200," +
 			"aecho=0.9:0.8:35|60:0.18|0.1",
 	},
+	{
+		Name:        "mellow",
+		Description: "ทุ้มนุ่ม ลดคีย์เสียงลง ~3.4 semitone (ความเร็วเท่าเดิม) เน้นเนื้อเสียงต่ำ ตัดแหลมเกิน 8kHz",
+		// asetrate ลด pitch พร้อมยืดเวลา แล้ว atempo (1/0.82) ดึงความเร็วกลับ ต้อง aresample ก่อนเพราะ asetrate อิง sample rate ของ input
+		Filter: "aresample=48000,asetrate=39360,aresample=48000,atempo=1.2195," +
+			"firequalizer=gain_entry='" +
+			"entry(100,7);entry(126,4);entry(159,2.5);entry(200,2.5);entry(252,2.3);entry(317,2);" +
+			"entry(400,1.5);entry(504,0.7);entry(635,-0.4);entry(800,-1);entry(1008,-1);entry(1270,-0.1);" +
+			"entry(1600,2);entry(2016,2.5);entry(2540,2.3);entry(3200,4.5);entry(4032,4.8);entry(5080,1.6);" +
+			"entry(6400,-1.7);entry(8063,-12);entry(9000,-24);entry(10159,-40);entry(12800,-40)'",
+	},
 }
 
 // LookupVoiceFX หา preset ตามชื่อ ("" หรือ "none" = ไม่ใส่ FX และคืน VoiceFX ว่าง)

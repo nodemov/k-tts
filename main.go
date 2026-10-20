@@ -243,7 +243,7 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 func main() {
 	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.75 = เร็วขึ้น 75%)
 	const AUDIO_SPEED_MULTIPLIER = 1.75
-	// voice FX สำหรับหนังสือเสียง ("" = ไม่ใส่, clear, bright, warm, deep, soft, broadcast, room)
+	// voice FX สำหรับหนังสือเสียง ("" = ไม่ใส่, clear, bright, warm, deep, soft, broadcast, room, mellow)
 	const VOICE_FX = "clear"
 	// จำนวน workers (จำนวนไฟล์ที่ประมวลผลพร้อมกัน)
 	const NUM_WORKERS = 4

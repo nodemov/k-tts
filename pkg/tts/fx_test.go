@@ -1,7 +1,10 @@
 package tts
 
 import (
+	"math"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -46,6 +49,29 @@ func TestVoiceFXPresetsRunInFFmpeg(t *testing.T) {
 			"-f", "null", "-")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("preset %s: %v\n%s", fx.Name, err, out)
+		}
+	}
+}
+
+func TestVoiceFXPresetsKeepDuration(t *testing.T) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	for _, fx := range VoiceFXPresets {
+		out := filepath.Join(t.TempDir(), fx.Name+".wav")
+		cmd := exec.Command("ffmpeg", "-hide_banner", "-nostats",
+			"-f", "lavfi", "-i", "sine=f=220:d=4:sample_rate=24000",
+			"-af", VoiceFXFilter(1, fx, DefaultLoudness), out)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("preset %s: %v\n%s", fx.Name, err, b)
+		}
+		b, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out).Output()
+		if err != nil {
+			t.Fatalf("ffprobe %s: %v", fx.Name, err)
+		}
+		d, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64)
+		if err != nil || math.Abs(d-4) > 0.1 {
+			t.Errorf("preset %s: duration %q, want ~4s", fx.Name, b)
 		}
 	}
 }

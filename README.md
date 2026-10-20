@@ -15,7 +15,7 @@
 
 ### 🎵 การปรับแต่งเสียงขั้นสูง
 - ปรับความเร็วเสียง (ค่าเริ่มต้น: 1.75x)
-- Voice FX สำหรับหนังสือเสียง (clear, bright, warm, deep, soft, broadcast, room)
+- Voice FX สำหรับหนังสือเสียง (clear, bright, warm, deep, soft, broadcast, room, mellow)
 - Audio enhancement ด้วย ffmpeg
 - Dynamic range normalization
 - High-quality MP3 encoding (320kbps, 48kHz)
@@ -133,6 +133,7 @@ go run ./cmd/combine-audio 5 output albums
 | `soft` | นุ่มนวล ไม่บาดหู เหมาะฟังก่อนนอน |
 | `broadcast` | แบบดีเจ/ผู้ประกาศข่าว บีบเสียงแน่น |
 | `room` | มี reverb บางๆ ให้เสียง TTS ไม่แห้ง |
+| `mellow` | ทุ้มนุ่ม ลดคีย์เสียงลง ~3.4 semitone (ความเร็วเท่าเดิม) ตัดแหลมเกิน 8kHz |
 
 ```bash
 # รวมทีละ 10 ตอน + เสียงชัด (ดังสุด)
@@ -221,7 +222,7 @@ gcloud alpha text-to-speech speak --text="สวัสดี" --language-code=th
 ```go
 // ในไฟล์ main.go
 const AUDIO_SPEED_MULTIPLIER = 1.75 // ความเร็วเสียง (1.0 = ปกติ)
-const VOICE_FX = "clear"            // voice FX: "", clear, bright, warm, deep, soft, broadcast, room
+const VOICE_FX = "clear"            // voice FX: "", clear, bright, warm, deep, soft, broadcast, room, mellow
 const NUM_WORKERS = 4               // จำนวน workers
 ```
 
