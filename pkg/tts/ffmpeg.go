@@ -1,0 +1,142 @@
+package tts
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+var partFileRe = regexp.MustCompile(`temp_part_(\d+)\.mp3`)
+
+// SortFilesNaturally เรียงลำดับไฟล์ temp_part_N.mp3 ตามหมายเลข (1, 2, ..., 10 แทนที่จะเป็น 1, 10, 2)
+func SortFilesNaturally(files []string) {
+	num := func(path string) int {
+		m := partFileRe.FindStringSubmatch(filepath.Base(path))
+		if len(m) < 2 {
+			return 0
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	sort.Slice(files, func(i, j int) bool { return num(files[i]) < num(files[j]) })
+}
+
+// CombineAudioFiles รวมไฟล์ temp_part_*.mp3 ใน tempDir เป็น outputFile และคืนลำดับไฟล์ที่ใช้รวม
+func CombineAudioFiles(tempDir, outputFile string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(tempDir, "temp_part_*.mp3"))
+	if err != nil || len(files) == 0 {
+		return nil, fmt.Errorf("ไม่พบไฟล์เสียงใน %s", tempDir)
+	}
+	SortFilesNaturally(files)
+
+	if len(files) == 1 {
+		// หากมีไฟล์เดียว ให้คัดลอกไปยัง output
+		data, err := os.ReadFile(files[0])
+		if err != nil {
+			return files, err
+		}
+		return files, os.WriteFile(outputFile, data, 0644)
+	}
+
+	// สร้างไฟล์รายการสำหรับ ffmpeg (ใช้ relative path จาก tempDir)
+	filelistPath := filepath.Join(tempDir, "filelist.txt")
+	var filelist strings.Builder
+	for _, file := range files {
+		fmt.Fprintf(&filelist, "file '%s'\n", filepath.Base(file))
+	}
+	if err := os.WriteFile(filelistPath, []byte(filelist.String()), 0644); err != nil {
+		return files, err
+	}
+	defer os.Remove(filelistPath)
+
+	absOutputFile, err := filepath.Abs(outputFile)
+	if err != nil {
+		return files, err
+	}
+
+	// ใช้ high-quality encoding parameters
+	cmd := exec.Command("ffmpeg",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", "filelist.txt",
+		"-c:a", "libmp3lame", // ใช้ LAME MP3 encoder คุณภาพสูง
+		"-b:a", "320k", // Bitrate 320kbps (คุณภาพสูงสุด)
+		"-ar", "48000", // Sample rate 48kHz
+		"-ac", "2", // Stereo
+		"-af", "volume=1.2,dynaudnorm=p=0.9:s=5", // ปรับ volume และ normalize
+		absOutputFile,
+		"-y")
+	cmd.Dir = tempDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return files, fmt.Errorf("ffmpeg error: %v\nOutput: %s", err, string(output))
+	}
+	return files, nil
+}
+
+// AtempoFilter สร้าง filter chain ของ atempo (ffmpeg รองรับครั้งละไม่เกิน 2.0x จึงต้องแบ่งเป็นขั้น)
+func AtempoFilter(speed float64) string {
+	if speed <= 2.0 {
+		return fmt.Sprintf("atempo=%.2f,dynaudnorm=p=0.9:s=5", speed)
+	}
+	// เช่น 2.4x = 1.5 * 1.6
+	firstStep := 1.5
+	secondStep := speed / firstStep
+	if secondStep > 2.0 {
+		// หากยังเกิน 2.0 ให้แบ่งเป็น 3 ขั้น
+		firstStep = 1.4
+		secondStep = 1.5
+		thirdStep := speed / (firstStep * secondStep)
+		return fmt.Sprintf("atempo=%.2f,atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep, thirdStep)
+	}
+	return fmt.Sprintf("atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep)
+}
+
+// AdjustSpeed ปรับความเร็วของไฟล์เสียงด้วย ffmpeg (inputFile และ outputFile เป็นไฟล์เดียวกันได้)
+func AdjustSpeed(inputFile, outputFile string, speed float64) error {
+	tempFile := inputFile + ".temp.mp3"
+
+	cmd := exec.Command("ffmpeg",
+		"-i", inputFile,
+		"-af", AtempoFilter(speed), // รวม atempo และ dynaudnorm ใน filter เดียว
+		"-c:a", "libmp3lame", // High-quality MP3 encoder
+		"-b:a", "320k", // Maximum bitrate
+		"-ar", "48000", // High sample rate
+		"-ac", "2", // Stereo
+		tempFile,
+		"-y")
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ffmpeg speed adjustment error: %v\nOutput: %s", err, string(output))
+	}
+
+	// แทนที่ไฟล์เดิมด้วยไฟล์ที่ปรับความเร็วแล้ว
+	if err := os.Rename(tempFile, outputFile); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ไม่สามารถแทนที่ไฟล์ได้: %v", err)
+	}
+	return nil
+}
+
+// EnhanceAudioQuality post-processing เสียง TTS ให้คุณภาพสูงขึ้น
+func EnhanceAudioQuality(inputFile, outputFile string) error {
+	cmd := exec.Command("ffmpeg",
+		"-i", inputFile,
+		"-c:a", "libmp3lame",
+		"-b:a", "320k",
+		"-ar", "48000",
+		"-ac", "2",
+		"-af", "highpass=f=80,lowpass=f=15000,dynaudnorm=p=0.9:s=5:m=15,volume=1.1", // Filter chain สำหรับปรับปรุงเสียง
+		outputFile,
+		"-y")
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg enhancement error: %v\nOutput: %s", err, string(output))
+	}
+	return nil
+}
