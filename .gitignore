@@ -1,6 +1,7 @@
 k-tts
 /output/*
 output-combine/*
+output-clear/*
 /chapters/*
 .env
 .env.local
