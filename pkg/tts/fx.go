@@ -15,7 +15,7 @@ type VoiceFX struct {
 // ทุก preset จบที่ loudness เดียวกัน (peak -1 dBTP) เพื่อให้สลับ preset แล้วความดังไม่กระโดด
 // สูงกว่า MaxLoudness แล้ว loudnorm ดันต่อไม่ขึ้น (limiter ตัน)
 const (
-	DefaultLoudness = -11.0
+	DefaultLoudness = MaxLoudness
 	MinLoudness     = -24.0
 	MaxLoudness     = -9.0
 )

@@ -120,9 +120,9 @@ go run ./cmd/combine-audio 5 output albums
 
 ### 🎙️ Voice FX สำหรับหนังสือเสียง
 
-ใส่ `-fx <ชื่อ>` (ใช้คู่กับ `-speed` ได้ — ปรับความเร็วและ FX ใน encode รอบเดียว) ทุก preset ปรับความดังจบที่ระดับเดียวกัน (ค่าเริ่มต้น −11 LUFS) สลับ preset แล้วเสียงไม่ดัง/เบากระโดด
+ใส่ `-fx <ชื่อ>` (ใช้คู่กับ `-speed` ได้ — ปรับความเร็วและ FX ใน encode รอบเดียว) ทุก preset ปรับความดังจบที่ระดับเดียวกัน (ค่าเริ่มต้น −9 LUFS = ดังสุด) สลับ preset แล้วเสียงไม่ดัง/เบากระโดด
 
-ปรับความดังด้วย `-loudness` (ใช้คู่กับ `-fx` เท่านั้น): ค่ายิ่งใกล้ 0 ยิ่งดัง ใส่ได้ตั้งแต่ −24 ถึง −9 (−9 คือดังสุด ถ้าตั้งเกินกว่านี้ limiter จะดันต่อไม่ขึ้นแล้ว) peak ถูกจำกัดที่ −1 dB เสียงจึงไม่แตก
+ปรับความดังด้วย `-loudness` (ใช้คู่กับ `-fx` เท่านั้น): ค่ายิ่งใกล้ 0 ยิ่งดัง ใส่ได้ตั้งแต่ −24 ถึง −9 (ค่าเริ่มต้น −9 คือดังสุดแล้ว ถ้าตั้งเกินกว่านี้ limiter จะดันต่อไม่ขึ้น ใช้ flag นี้เพื่อลดความดังลง) peak ถูกจำกัดที่ −1 dB เสียงจึงไม่แตก
 
 | ชื่อ | โทนเสียง |
 | --- | --- |
@@ -135,20 +135,20 @@ go run ./cmd/combine-audio 5 output albums
 | `room` | มี reverb บางๆ ให้เสียง TTS ไม่แห้ง |
 
 ```bash
-# รวมทีละ 10 ตอน + เสียงชัด
+# รวมทีละ 10 ตอน + เสียงชัด (ดังสุด)
 go run ./cmd/combine-audio -fx clear 10
 
 # เร่ง 1.2x + เสียงอบอุ่น
 go run ./cmd/combine-audio -speed 1.2 -fx warm 10
 
-# เสียงชัด + ดังสุด
-go run ./cmd/combine-audio -fx clear -loudness -9 10
+# เสียงนุ่ม + เบาลง
+go run ./cmd/combine-audio -fx soft -loudness -14 10
 
 # ใส่ FX ทีละไฟล์โดยไม่รวม (size=1) ไปไว้อีกโฟลเดอร์
 go run ./cmd/combine-audio -fx bright 1 output output-bright
 ```
 
-ถ้าต้องการใส่ FX ตั้งแต่ตอนสร้างเสียง ให้ตั้ง `VOICE_FX` ใน `main.go` (อย่าใส่ซ้ำทั้งสองที่ เพราะ EQ จะทับกันสองรอบ)
+`main.go` ตั้ง `VOICE_FX = "clear"` ไว้เป็นค่าเริ่มต้น ไฟล์ที่สร้างใหม่จึงได้เสียงชัด + ดังสุดตั้งแต่ตอนสร้าง ตอนรวมไฟล์เหล่านี้ไม่ต้องใส่ `-fx` ซ้ำ (EQ จะทับกันสองรอบ) ใช้ `-fx` เฉพาะกับไฟล์เก่าที่สร้างก่อนมี FX
 
 ### ตัวอย่างการใช้งาน
 ```bash
@@ -221,7 +221,7 @@ gcloud alpha text-to-speech speak --text="สวัสดี" --language-code=th
 ```go
 // ในไฟล์ main.go
 const AUDIO_SPEED_MULTIPLIER = 1.75 // ความเร็วเสียง (1.0 = ปกติ)
-const VOICE_FX = ""                 // voice FX: "", clear, bright, warm, deep, soft, broadcast, room
+const VOICE_FX = "clear"            // voice FX: "", clear, bright, warm, deep, soft, broadcast, room
 const NUM_WORKERS = 4               // จำนวน workers
 ```
 
