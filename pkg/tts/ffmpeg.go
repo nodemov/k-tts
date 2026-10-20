@@ -121,8 +121,12 @@ func ConcatFiles(files []string, outputFile string) error {
 
 // AtempoFilter สร้าง filter chain ของ atempo (ffmpeg รองรับครั้งละไม่เกิน 2.0x จึงต้องแบ่งเป็นขั้น)
 func AtempoFilter(speed float64) string {
+	return atempoChain(speed) + ",dynaudnorm=p=0.9:s=5"
+}
+
+func atempoChain(speed float64) string {
 	if speed <= 2.0 {
-		return fmt.Sprintf("atempo=%.2f,dynaudnorm=p=0.9:s=5", speed)
+		return fmt.Sprintf("atempo=%.2f", speed)
 	}
 	// เช่น 2.4x = 1.5 * 1.6
 	firstStep := 1.5
@@ -132,18 +136,34 @@ func AtempoFilter(speed float64) string {
 		firstStep = 1.4
 		secondStep = 1.5
 		thirdStep := speed / (firstStep * secondStep)
-		return fmt.Sprintf("atempo=%.2f,atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep, thirdStep)
+		return fmt.Sprintf("atempo=%.2f,atempo=%.2f,atempo=%.2f", firstStep, secondStep, thirdStep)
 	}
-	return fmt.Sprintf("atempo=%.2f,atempo=%.2f,dynaudnorm=p=0.9:s=5", firstStep, secondStep)
+	return fmt.Sprintf("atempo=%.2f,atempo=%.2f", firstStep, secondStep)
 }
 
 // AdjustSpeed ปรับความเร็วของไฟล์เสียงด้วย ffmpeg (inputFile และ outputFile เป็นไฟล์เดียวกันได้)
 func AdjustSpeed(inputFile, outputFile string, speed float64) error {
+	if err := reencode(inputFile, outputFile, AtempoFilter(speed)); err != nil {
+		return fmt.Errorf("ffmpeg speed adjustment error: %w", err)
+	}
+	return nil
+}
+
+// ApplyVoiceFX ปรับความเร็ว ใส่ voice FX และปรับความดังเป็น lufs ใน encode รอบเดียว (inputFile และ outputFile เป็นไฟล์เดียวกันได้)
+func ApplyVoiceFX(inputFile, outputFile string, speed float64, fx VoiceFX, lufs float64) error {
+	if err := reencode(inputFile, outputFile, VoiceFXFilter(speed, fx, lufs)); err != nil {
+		return fmt.Errorf("ffmpeg voice fx (%s) error: %w", fx.Name, err)
+	}
+	return nil
+}
+
+// reencode encode inputFile ผ่าน filter แล้วเขียนทับ outputFile ผ่านไฟล์ชั่วคราว
+func reencode(inputFile, outputFile, filter string) error {
 	tempFile := inputFile + ".temp.mp3"
 
 	cmd := exec.Command("ffmpeg",
 		"-i", inputFile,
-		"-af", AtempoFilter(speed), // รวม atempo และ dynaudnorm ใน filter เดียว
+		"-af", filter,
 		"-c:a", "libmp3lame", // High-quality MP3 encoder
 		"-b:a", "320k", // Maximum bitrate
 		"-ar", "48000", // High sample rate
@@ -153,7 +173,7 @@ func AdjustSpeed(inputFile, outputFile string, speed float64) error {
 
 	if output, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tempFile)
-		return fmt.Errorf("ffmpeg speed adjustment error: %v\nOutput: %s", err, string(output))
+		return fmt.Errorf("%v\nOutput: %s", err, string(output))
 	}
 
 	// แทนที่ไฟล์เดิมด้วยไฟล์ที่ปรับความเร็วแล้ว

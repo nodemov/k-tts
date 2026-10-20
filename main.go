@@ -62,10 +62,14 @@ func combineAudioFiles(tempDir, outputFile string) error {
 	return err
 }
 
-// ปรับความเร็วของไฟล์เสียงด้วย ffmpeg
-func adjustAudioSpeed(inputFile, outputFile string, speed float64) error {
-	fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.2fx...\n", speed)
-	return tts.AdjustSpeed(inputFile, outputFile, speed)
+// ปรับความเร็วและใส่ voice FX ของไฟล์เสียงด้วย ffmpeg
+func adjustAudioSpeed(inputFile, outputFile string, speed float64, fx tts.VoiceFX) error {
+	if fx.Name != "" {
+		fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.2fx + voice fx %s...\n", speed, fx.Name)
+	} else {
+		fmt.Printf("⚡ กำลังปรับความเร็วเป็น %.2fx...\n", speed)
+	}
+	return tts.ApplyVoiceFX(inputFile, outputFile, speed, fx, tts.DefaultLoudness)
 }
 
 // ประมวลผลไฟล์เดียวด้วย Google Translate TTS สำหรับ multi-worker
@@ -142,7 +146,7 @@ func processFileWithCloudTTSWorker(client *texttospeech.Client, ctx context.Cont
 }
 
 // TTS Worker function
-func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, client *texttospeech.Client, ctx context.Context, useCloudTTS bool, audioSpeed float64) {
+func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, client *texttospeech.Client, ctx context.Context, useCloudTTS bool, audioSpeed float64, voiceFX tts.VoiceFX) {
 	fmt.Printf("🚀 Worker %d เริ่มทำงาน\n", workerID)
 
 	for job := range jobs {
@@ -179,7 +183,7 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 			// ปรับความเร็วสำหรับ Cloud TTS
 			if processingError == nil {
 				tempSpeedFile := job.OutputPath + ".speed.mp3"
-				err = adjustAudioSpeed(job.OutputPath, tempSpeedFile, audioSpeed)
+				err = adjustAudioSpeed(job.OutputPath, tempSpeedFile, audioSpeed, voiceFX)
 				if err == nil {
 					os.Rename(tempSpeedFile, job.OutputPath)
 					fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.2fx)\n", workerID, audioSpeed)
@@ -200,7 +204,7 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 					processingError = fmt.Errorf("ไม่สามารถรวมไฟล์เสียงได้: %v", err)
 				} else {
 					// ปรับความเร็วไฟล์เสียง
-					err = adjustAudioSpeed(job.OutputPath, job.OutputPath, audioSpeed)
+					err = adjustAudioSpeed(job.OutputPath, job.OutputPath, audioSpeed, voiceFX)
 					if err != nil {
 						fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
 					} else {
@@ -239,14 +243,21 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 func main() {
 	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.75 = เร็วขึ้น 75%)
 	const AUDIO_SPEED_MULTIPLIER = 1.75
+	// voice FX สำหรับหนังสือเสียง ("" = ไม่ใส่, clear, bright, warm, deep, soft, broadcast, room)
+	const VOICE_FX = "clear"
 	// จำนวน workers (จำนวนไฟล์ที่ประมวลผลพร้อมกัน)
 	const NUM_WORKERS = 4
+
+	voiceFX, err := tts.LookupVoiceFX(VOICE_FX)
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Printf("🚀 เริ่มต้นระบบ Multi-Worker TTS (%d workers)\n", NUM_WORKERS)
 
 	// สร้าง folders ที่จำเป็น
 	outputDir := "output"
-	err := ensureDir(outputDir)
+	err = ensureDir(outputDir)
 	if err != nil {
 		panic("ไม่สามารถสร้าง output folder: " + err.Error())
 	}
@@ -324,7 +335,7 @@ func main() {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			ttsWorker(id, jobsChan, resultsChan, client, ctx, useCloudTTS, AUDIO_SPEED_MULTIPLIER)
+			ttsWorker(id, jobsChan, resultsChan, client, ctx, useCloudTTS, AUDIO_SPEED_MULTIPLIER, voiceFX)
 		}(workerID)
 	}
 

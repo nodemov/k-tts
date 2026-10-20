@@ -14,7 +14,8 @@
 - **Google Translate TTS** (สำรอง): ใช้งานได้ทันที, ไม่ต้องตั้งค่า
 
 ### 🎵 การปรับแต่งเสียงขั้นสูง
-- ปรับความเร็วเสียง (ค่าเริ่มต้น: 1.6x)
+- ปรับความเร็วเสียง (ค่าเริ่มต้น: 1.75x)
+- Voice FX สำหรับหนังสือเสียง (clear, bright, warm, deep, soft, broadcast, room)
 - Audio enhancement ด้วย ffmpeg
 - Dynamic range normalization
 - High-quality MP3 encoding (320kbps, 48kHz)
@@ -101,7 +102,7 @@ choco install ffmpeg
 เรียง `output/*.mp3` ตามชื่อไฟล์ แล้วรวมทีละ `size` ไฟล์ด้วย ffmpeg (stream copy ไม่ re-encode) ชื่อไฟล์ผลลัพธ์เป็น `<ไฟล์แรก>-<ไฟล์สุดท้าย>.mp3`:
 
 ```bash
-go run ./cmd/combine-audio [size] [input_dir] [output_dir]
+go run ./cmd/combine-audio [-speed N] [-fx name] [-loudness LUFS] [size] [input_dir] [output_dir]
 ```
 
 ค่าเริ่มต้น: `size=10`, `input_dir=output`, `output_dir=<input_dir>/combined`
@@ -116,6 +117,38 @@ go run ./cmd/combine-audio 5 output albums
 ```
 
 ถ้าจำนวนไฟล์หารไม่ลงตัว กลุ่มสุดท้ายจะมีไฟล์น้อยกว่า `size` (เช่น `0101-0103.mp3`)
+
+### 🎙️ Voice FX สำหรับหนังสือเสียง
+
+ใส่ `-fx <ชื่อ>` (ใช้คู่กับ `-speed` ได้ — ปรับความเร็วและ FX ใน encode รอบเดียว) ทุก preset ปรับความดังจบที่ระดับเดียวกัน (ค่าเริ่มต้น −11 LUFS) สลับ preset แล้วเสียงไม่ดัง/เบากระโดด
+
+ปรับความดังด้วย `-loudness` (ใช้คู่กับ `-fx` เท่านั้น): ค่ายิ่งใกล้ 0 ยิ่งดัง ใส่ได้ตั้งแต่ −24 ถึง −9 (−9 คือดังสุด ถ้าตั้งเกินกว่านี้ limiter จะดันต่อไม่ขึ้นแล้ว) peak ถูกจำกัดที่ −1 dB เสียงจึงไม่แตก
+
+| ชื่อ | โทนเสียง |
+| --- | --- |
+| `clear` | ชัด ตัดเสียงอู้ เน้นย่านพูด ฟังรู้เรื่องแม้เปิดเร็ว |
+| `bright` | สดใส มีประกาย แหลมที่สุดในชุด |
+| `warm` | อบอุ่น นุ่ม มีเนื้อเสียงมากขึ้น |
+| `deep` | ทุ้มลึก หนักแน่น เบสมากที่สุด |
+| `soft` | นุ่มนวล ไม่บาดหู เหมาะฟังก่อนนอน |
+| `broadcast` | แบบดีเจ/ผู้ประกาศข่าว บีบเสียงแน่น |
+| `room` | มี reverb บางๆ ให้เสียง TTS ไม่แห้ง |
+
+```bash
+# รวมทีละ 10 ตอน + เสียงชัด
+go run ./cmd/combine-audio -fx clear 10
+
+# เร่ง 1.2x + เสียงอบอุ่น
+go run ./cmd/combine-audio -speed 1.2 -fx warm 10
+
+# เสียงชัด + ดังสุด
+go run ./cmd/combine-audio -fx clear -loudness -9 10
+
+# ใส่ FX ทีละไฟล์โดยไม่รวม (size=1) ไปไว้อีกโฟลเดอร์
+go run ./cmd/combine-audio -fx bright 1 output output-bright
+```
+
+ถ้าต้องการใส่ FX ตั้งแต่ตอนสร้างเสียง ให้ตั้ง `VOICE_FX` ใน `main.go` (อย่าใส่ซ้ำทั้งสองที่ เพราะ EQ จะทับกันสองรอบ)
 
 ### ตัวอย่างการใช้งาน
 ```bash
@@ -187,7 +220,8 @@ gcloud alpha text-to-speech speak --text="สวัสดี" --language-code=th
 ### การแก้ไขค่าคงที่สำคัญ
 ```go
 // ในไฟล์ main.go
-const AUDIO_SPEED_MULTIPLIER = 1.6  // ความเร็วเสียง (1.0 = ปกติ)
+const AUDIO_SPEED_MULTIPLIER = 1.75 // ความเร็วเสียง (1.0 = ปกติ)
+const VOICE_FX = ""                 // voice FX: "", clear, bright, warm, deep, soft, broadcast, room
 const NUM_WORKERS = 4               // จำนวน workers
 ```
 

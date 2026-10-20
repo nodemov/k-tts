@@ -14,13 +14,15 @@ import (
 	"k-tts/pkg/tts"
 )
 
-const usage = "usage: go run ./cmd/combine-audio [-speed N] [size] [input_dir] [output_dir]"
+const usage = "usage: go run ./cmd/combine-audio [-speed N] [-fx name] [-loudness LUFS] [size] [input_dir] [output_dir]"
 
 type combineOptions struct {
 	size      int
 	inputDir  string
 	outputDir string
 	speed     float64
+	fx        tts.VoiceFX
+	loudness  float64
 }
 
 type group struct {
@@ -51,14 +53,17 @@ func main() {
 	if opts.speed != 1 {
 		fmt.Printf("speeding up combined files by %.2fx\n", opts.speed)
 	}
+	if opts.fx.Name != "" {
+		fmt.Printf("applying voice fx %q at %g LUFS: %s\n", opts.fx.Name, opts.loudness, opts.fx.Description)
+	}
 	for _, g := range groups {
 		outputFile := filepath.Join(opts.outputDir, g.name+".mp3")
 		if err := tts.ConcatFiles(g.files, outputFile); err != nil {
 			fatal(fmt.Errorf("combine %s: %w", g.name, err))
 		}
-		if opts.speed != 1 {
-			if err := tts.AdjustSpeed(outputFile, outputFile, opts.speed); err != nil {
-				fatal(fmt.Errorf("speed up %s: %w", g.name, err))
+		if opts.speed != 1 || opts.fx.Name != "" {
+			if err := tts.ApplyVoiceFX(outputFile, outputFile, opts.speed, opts.fx, opts.loudness); err != nil {
+				fatal(fmt.Errorf("process %s: %w", g.name, err))
 			}
 		}
 		fmt.Printf("  %s (%d files)\n", outputFile, len(g.files))
@@ -71,11 +76,26 @@ func parseArgs(args []string) (combineOptions, error) {
 	fs := flag.NewFlagSet("combine-audio", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Float64Var(&opts.speed, "speed", 1, "speed multiplier applied after combining (atempo minimum is 0.5)")
+	fxName := fs.String("fx", "", "voice fx preset applied after combining")
+	fs.Float64Var(&opts.loudness, "loudness", tts.DefaultLoudness, "target loudness in LUFS for -fx (higher = louder)")
 	if err := fs.Parse(args); err != nil {
 		return combineOptions{}, fmt.Errorf("%s\n%v", usage, err)
 	}
 	if opts.speed < 0.5 {
 		return combineOptions{}, fmt.Errorf("%s\nspeed must be >= 0.5", usage)
+	}
+	if opts.loudness < tts.MinLoudness || opts.loudness > tts.MaxLoudness {
+		return combineOptions{}, fmt.Errorf("%s\nloudness must be between %g and %g LUFS", usage, tts.MinLoudness, tts.MaxLoudness)
+	}
+	fx, err := tts.LookupVoiceFX(*fxName)
+	if err != nil {
+		return combineOptions{}, fmt.Errorf("%s\n%v", usage, err)
+	}
+	opts.fx = fx
+	loudnessSet := false
+	fs.Visit(func(f *flag.Flag) { loudnessSet = loudnessSet || f.Name == "loudness" })
+	if loudnessSet && fx.Name == "" {
+		return combineOptions{}, fmt.Errorf("%s\n-loudness requires -fx", usage)
 	}
 	args = fs.Args()
 
