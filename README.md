@@ -30,7 +30,7 @@
 ```
 k-tts/
 ├── main.go              # ไฟล์หลักของโปรแกรม
-├── cmd/fetch-chapters/  # ดึง content_en จาก PostgreSQL เป็นไฟล์บท
+├── cmd/fetch-chapters/  # ดึงตอนแปลไทยจาก novels DB เป็นไฟล์บท
 ├── go.mod               # Go module dependencies
 ├── chapters/            # โฟลเดอร์สำหรับไฟล์ข้อความต้นฉบับ (.txt)
 ├── output/              # โฟลเดอร์สำหรับไฟล์เสียงที่สร้างขึ้น (.mp3)
@@ -39,25 +39,36 @@ k-tts/
 
 ## 🚀 การติดตั้งและใช้งาน
 
-### ดึงข้อมูลบทจาก PostgreSQL
+### ดึงตอนแปลไทยจาก PostgreSQL (novels)
 
-คำสั่งนี้จะถาม `document_id`, ดึง `content_en` จากตาราง `chunks` โดยเรียงตาม `page_number ASC` และสร้างไฟล์ทุก 200 หน้า เช่น `chapters/1-200.txt` และ `chapters/201-400.txt`:
-
-```bash
-export LOCAL_HOST="192.168.1.16"
-export LOCAL_PORT="5432"
-export LOCAL_USER="kanit"
-export LOCAL_DB="hono_app"
-export LOCAL_PASS="ใส่รหัสผ่าน PostgreSQL ที่นี่"
-
-go run ./cmd/fetch-chapters
-```
-
-หรือส่ง `document_id` เป็นอาร์กิวเมนต์ และเปลี่ยนโฟลเดอร์ปลายทางได้:
+ระบุ `book_id` แล้วดึงเฉพาะตอนที่แปลไทยแล้ว (`status_translate = 'done'`) จากตาราง `chapters` เรียงตาม `chapter_index` แล้วเขียนเป็นไฟล์เช่น `chapters/0001.txt`, `chapters/0002.txt` (ชื่อไฟล์เป็นเลขตอน 1-based zero-padded):
 
 ```bash
-go run ./cmd/fetch-chapters <document_id> [output_dir]
+คัดลอก `.env.example` เป็น `.env` แล้วใส่ connection string:
+
+```bash
+cp .env.example .env
+# แก้ DATABASE_URL ใน .env
 ```
+
+จากนั้นรันได้เลย (โปรแกรมโหลด `.env` อัตโนมัติ; ถ้ายังไม่มี `sslmode` จะใส่ `sslmode=disable` ให้):
+
+```bash
+go run ./cmd/fetch-chapters <book_id> [from to] [output_dir]
+```
+
+`from` / `to` เป็นเลขตอนแบบ 1-based (ตรงกับชื่อไฟล์ `0001.txt` …) — ถ้าไม่ระบุจะดึงทุกตอนที่แปลไทยแล้ว
+
+ตัวอย่าง:
+
+```bash
+go run ./cmd/fetch-chapters 01a154d4-f65b-7fa4-b848-46cb3e9ed226
+go run ./cmd/fetch-chapters 01a1489e-e0f5-7f18-8418-f8bbb9c0f9ba 1 100
+go run ./cmd/fetch-chapters 01a1489e-e0f5-7f18-8418-f8bbb9c0f9ba 1 100 chapters
+```
+
+ถ้าไม่ส่ง `book_id` โปรแกรมจะถามทาง stdin  
+ไฟล์ `.env` ถูก gitignore แล้ว — อย่า commit ความลับขึ้น git
 
 ### ความต้องการระบบ
 - Go 1.19 หรือสูงกว่า
