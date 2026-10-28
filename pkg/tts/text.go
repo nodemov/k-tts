@@ -1,5 +1,5 @@
 // Package tts รวม logic ที่ใช้ร่วมกันระหว่าง CLI (main.go) และ web-audio-tools backend:
-// การทำความสะอาด/แบ่งข้อความภาษาไทย, การเรียก Google TTS และ ffmpeg pipeline
+// การทำความสะอาด/แบ่งข้อความภาษาไทย, การเรียก Google TTS หรือ Edge TTS และ ffmpeg pipeline
 package tts
 
 import (

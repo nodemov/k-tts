@@ -149,6 +149,44 @@ func AdjustSpeed(inputFile, outputFile string, speed float64) error {
 	return nil
 }
 
+// SpeedOnlyFilter เป็น atempo อย่างเดียว ไม่มี dynaudnorm, voice FX หรือ loudness
+func SpeedOnlyFilter(speed float64) string {
+	return atempoChain(speed)
+}
+
+// SpeedUp เร่งความเร็วอย่างเดียวและคง sample rate กับจำนวนช่องเสียงเดิม
+// speed 1 คืนไฟล์เดิมโดยไม่ encode ใหม่
+func SpeedUp(inputFile, outputFile string, speed float64) error {
+	if speed == 1 {
+		if inputFile == outputFile {
+			return nil
+		}
+		data, err := os.ReadFile(inputFile)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(outputFile, data, 0644)
+	}
+
+	tempFile := inputFile + ".speedup.mp3"
+	cmd := exec.Command("ffmpeg",
+		"-i", inputFile,
+		"-af", SpeedOnlyFilter(speed),
+		"-c:a", "libmp3lame",
+		"-q:a", "2",
+		tempFile,
+		"-y")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ffmpeg speed up error: %v\nOutput: %s", err, string(output))
+	}
+	if err := os.Rename(tempFile, outputFile); err != nil {
+		os.Remove(tempFile)
+		return fmt.Errorf("ไม่สามารถแทนที่ไฟล์ได้: %v", err)
+	}
+	return nil
+}
+
 // ApplyVoiceFX ปรับความเร็ว ใส่ voice FX และปรับความดังเป็น lufs ใน encode รอบเดียว (inputFile และ outputFile เป็นไฟล์เดียวกันได้)
 func ApplyVoiceFX(inputFile, outputFile string, speed float64, fx VoiceFX, lufs float64) error {
 	if err := reencode(inputFile, outputFile, VoiceFXFilter(speed, fx, lufs)); err != nil {

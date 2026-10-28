@@ -25,6 +25,57 @@ func TestLookupVoiceFX(t *testing.T) {
 	}
 }
 
+func TestSpeedOnlyFilterSkipsDynamics(t *testing.T) {
+	got := SpeedOnlyFilter(1.75)
+	if got != "atempo=1.75" {
+		t.Fatalf("filter = %q", got)
+	}
+	if strings.Contains(got, "dynaudnorm") || strings.Contains(got, "loudnorm") {
+		t.Fatalf("filter still colors the voice: %s", got)
+	}
+}
+
+func TestSpeedUpKeepsRateAndChannels(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.mp3")
+	out := filepath.Join(dir, "out.mp3")
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-nostats",
+		"-f", "lavfi", "-i", "sine=f=220:d=2:sample_rate=16000",
+		"-ac", "1", src)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("source: %v\n%s", err, b)
+	}
+	if err := SpeedUp(src, out, 2); err != nil {
+		t.Fatal(err)
+	}
+	b, err := exec.Command("ffprobe", "-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=sample_rate,channels:format=duration",
+		"-of", "default=nw=1", out).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "sample_rate=16000") || !strings.Contains(text, "channels=1") {
+		t.Fatalf("probe = %s", text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, "duration=") {
+			continue
+		}
+		d, err := strconv.ParseFloat(strings.TrimPrefix(line, "duration="), 64)
+		if err != nil || math.Abs(d-1) > 0.15 {
+			t.Fatalf("duration %q, want ~1s", line)
+		}
+	}
+}
+
 func TestVoiceFXFilter(t *testing.T) {
 	if got, want := VoiceFXFilter(1.5, VoiceFX{}, DefaultLoudness), AtempoFilter(1.5); got != want {
 		t.Errorf("no fx: got %q, want %q", got, want)

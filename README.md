@@ -12,6 +12,8 @@
 ### 🎤 รองรับ TTS Engine หลายประเภท
 - **Google Cloud TTS** (แนะนำ): คุณภาพเสียงสูง, เสียงธรรมชาติ
 - **Google Translate TTS** (สำรอง): ใช้งานได้ทันที, ไม่ต้องตั้งค่า
+- **Edge TTS**: เรียกเซิร์ฟเวอร์ edge-tts ในเครื่อง แล้วประมวลผลหลายตอนพร้อมกัน
+- **9router**: ยิง `/v1/audio/speech` ไปยัง VM 1–12 พร้อมกัน แต่ละเครื่องใช้ API key ของตัวเองใน `.env`
 
 ### 🎵 การปรับแต่งเสียงขั้นสูง
 - ปรับความเร็วเสียง (ค่าเริ่มต้น: 1.75x)
@@ -96,6 +98,32 @@ choco install ffmpeg
    go run main.go
    ```
 3. ไฟล์เสียงจะถูกสร้างในโฟลเดอร์ `output/`
+
+เลือกเอนจินด้วย `-engine cloud`, `-engine translate`, `-engine edge`, `-engine router` หรือปล่อยว่าง (ใช้ Cloud ถ้ามี credentials ไม่เช่นนั้นใช้ Translate) จำนวนไฟล์ที่ทำพร้อมกันตั้งด้วย `-workers` (ค่าเริ่มต้น 4)
+
+### ใช้ Edge TTS
+
+เปิดเซิร์ฟเวอร์ edge-tts ก่อน แล้วให้ `TTS_CONCURRENCY` ไม่ต่ำกว่า `-workers` (ค่าเริ่มต้นทั้งคู่คือ 4) จากนั้นแปลงทุกไฟล์ใน `chapters/` พร้อมกัน:
+
+```bash
+# ในโปรเจกต์ edge-tts
+TTS_CONCURRENCY=4 uvicorn server:app --host 127.0.0.1 --port 8000
+
+# ในโปรเจกต์ k-tts
+go run . -engine edge -workers 4
+```
+
+`-edge-url` ค่าเริ่มต้น `http://127.0.0.1:8000` และ `-voice` ค่าเริ่มต้น `th-TH-PremwadeeNeural` ความเร็ว 1.75x และ voice FX `clear` ยังถูกใส่หลังได้ไฟล์ MP3 แล้ว
+
+### ใช้ 9router 12 VM
+
+สร้าง API key บน dashboard ของแต่ละ VM แล้วใส่ใน `.env` แทน `replace-me` คีย์ของเครื่องหลักใช้กับ VM โดยตรงไม่ได้ แต่ละเครื่องต้องมีคีย์ของตัวเอง VM ที่ยังเป็น `replace-me` จะถูกข้าม
+
+```bash
+go run . -engine router -workers 4
+```
+
+แต่ละก้อนข้อความไปคนละ VM พร้อมกัน สูงสุด 12 คำขอค้าง โมเดลคือ `edge-tts/<voice>` ไฟล์เสียงใช้ของ 9router ตามเดิม แล้วเร่งความเร็วตาม `AUDIO_SPEED_MULTIPLIER` โดยไม่ใส่ voice FX หรือ loudness เอนจิน Google ยังปรับทั้งความเร็วและ voice FX ตามค่าใน `main.go`
 
 ### รวมไฟล์เสียงหลายตอนเป็นไฟล์เดียว
 
@@ -223,14 +251,15 @@ gcloud alpha text-to-speech speak --text="สวัสดี" --language-code=th
 // ในไฟล์ main.go
 const AUDIO_SPEED_MULTIPLIER = 1.75 // ความเร็วเสียง (1.0 = ปกติ)
 const VOICE_FX = "clear"            // voice FX: "", clear, bright, warm, deep, soft, broadcast, room, mellow
-const NUM_WORKERS = 4               // จำนวน workers
 ```
+
+จำนวน workers ตั้งตอนรันด้วย `-workers` (ค่าเริ่มต้น 4)
 
 ### พารามิเตอร์ที่สามารถปรับได้
 - **ความเร็วเสียง**: 0.25x - 4.0x
-- **จำนวน Workers**: 1-10 (แนะนำ 2-6)
+- **จำนวน Workers**: 1 ขึ้นไป (แนะนำ 2-6) ต้องไม่เกิน `TTS_CONCURRENCY` ของเซิร์ฟเวอร์ Edge
 - **คุณภาพเสียง**: 320kbps MP3, 48kHz sampling rate
-- **ขนาดการแบ่งข้อความ**: 150 ตัวอักษรต่อส่วน
+- **ขนาดการแบ่งข้อความ**: 150 ตัวอักษรต่อส่วนสำหรับ Google Translate, 120 สำหรับ Edge TTS
 
 ## 📊 คุณสมบัติเทคนิค
 
