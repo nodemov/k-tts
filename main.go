@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,9 @@ func combineAudioFiles(tempDir, outputFile string) error {
 	return err
 }
 
+// translateFallbackSpeed คือความเร็วของเสียงที่ถอยไปใช้ Google Translate TTS
+const translateFallbackSpeed = 1.75
+
 // เร่งความเร็วเสียงจาก 9router โดยไม่ใส่ voice FX หรือ loudness
 func speedUpRouterAudio(path string, speed float64) error {
 	if speed == 1 {
@@ -78,6 +82,47 @@ func speedUpRouterAudio(path string, speed float64) error {
 	return nil
 }
 
+// เร่งความเร็วเสียง Google Translate TTS ด้วย atempo อย่างเดียว
+func speedUpTranslateAudio(path string, speed float64) error {
+	fmt.Printf("⚡ กำลังเร่งความเร็ว Google Translate TTS เป็น %.2fx...\n", speed)
+	if err := tts.SpeedUp(path, path, speed); err != nil {
+		return err
+	}
+	fmt.Printf("⚡ เร่งความเร็วเสร็จสิ้น (%.2fx)\n", speed)
+	return nil
+}
+
+func finishWithTranslateFallback(workerID int, job TTSJob, workerTempDir string, routerErr error) error {
+	audioFiles, err := processFileWithGoogleTTSWorker(job, workerTempDir)
+	if err != nil || len(audioFiles) == 0 {
+		return fmt.Errorf("9router ล้มเหลว: %v; Google Translate TTS ล้มเหลว: %v", routerErr, err)
+	}
+	fmt.Printf("🔗 Worker %d: กำลังรวมไฟล์เสียง %s...\n", workerID, filepath.Base(job.FilePath))
+	if err := combineAudioFiles(workerTempDir, job.OutputPath); err != nil {
+		return fmt.Errorf("ไม่สามารถรวมไฟล์เสียงได้: %v", err)
+	}
+	if err := speedUpTranslateAudio(job.OutputPath, translateFallbackSpeed); err != nil {
+		return fmt.Errorf("ไม่สามารถเร่งความเร็วได้: %v", err)
+	}
+	return nil
+}
+
+func fetchTranslateWithRetry(text string) ([]byte, error) {
+	var last error
+	for attempt := 1; attempt <= 3; attempt++ {
+		audio, err := tts.FetchTranslateTTS(context.Background(), text, "th")
+		if err == nil {
+			return audio, nil
+		}
+		last = err
+		fmt.Printf("⚠️ Google Translate TTS ล้มเหลว ลองใหม่ครั้งที่ %d: %s\n", attempt, err.Error())
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+	return nil, last
+}
+
 // ปรับความเร็วและใส่ voice FX ของไฟล์เสียงด้วย ffmpeg
 func adjustAudioSpeed(inputFile, outputFile string, speed float64, fx tts.VoiceFX) error {
 	if fx.Name != "" {
@@ -90,7 +135,7 @@ func adjustAudioSpeed(inputFile, outputFile string, speed float64, fx tts.VoiceF
 
 // ประมวลผลไฟล์เดียวด้วย Google Translate TTS สำหรับ multi-worker
 func processFileWithGoogleTTSWorker(job TTSJob, workerTempDir string) ([]string, error) {
-	fmt.Printf("🔄 Worker กำลังประมวลผล: %s\n", filepath.Base(job.FilePath))
+	fmt.Printf("🔄 Worker กำลังประมวลผล: %s ด้วย Google Translate TTS\n", filepath.Base(job.FilePath))
 
 	// ทำความสะอาดข้อความก่อนประมวลผล
 	cleanedText := tts.CleanText(job.Text)
@@ -107,23 +152,21 @@ func processFileWithGoogleTTSWorker(job TTSJob, workerTempDir string) ([]string,
 	for i, part := range parts {
 		fmt.Printf("🎵 Worker กำลังสร้างเสียง %s ส่วน %d/%d...\n", filepath.Base(job.FilePath), i+1, len(parts))
 
-		audioData, err := tts.FetchTranslateTTS(context.Background(), part, "th")
+		audioData, err := fetchTranslateWithRetry(part)
 		if err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถดาวน์โหลดเสียง %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return nil, fmt.Errorf("ส่วน %d: %w", i+1, err)
 		}
 
 		// บันทึกไฟล์ส่วนย่อยใน workerTempDir
 		tempFilename := filepath.Join(workerTempDir, fmt.Sprintf("temp_part_%d.mp3", i+1))
 		if err := os.WriteFile(tempFilename, audioData, 0644); err != nil {
-			fmt.Printf("⚠️ Worker: ไม่สามารถบันทึกไฟล์ %s ส่วน %d: %s\n", filepath.Base(job.FilePath), i+1, err.Error())
-			continue
+			return nil, fmt.Errorf("ไม่สามารถบันทึกไฟล์ส่วน %d: %w", i+1, err)
 		}
 
 		audioFiles = append(audioFiles, tempFilename)
 		fmt.Printf("✅ Worker: บันทึก %s ส่วน %d สำเร็จ (%.1f KB)\n", filepath.Base(job.FilePath), i+1, float64(len(audioData))/1024)
 
-		// รอระหว่างการดาวน์โหลดเพื่อไม่ให้ถูก rate limit
+		// รอระหว่างคำขอของ worker นี้ worker อื่นยังยิงพร้อมกันได้
 		time.Sleep(tts.TranslateDelay)
 	}
 
@@ -301,13 +344,18 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 			results <- TTSResult{Job: job, Success: false, Error: fmt.Errorf("ไม่สามารถสร้าง temp directory: %v", err)}
 			continue
 		}
+		cleanTempFolder(workerTempDir)
 
 		var processingError error
 
 		if routerPool != nil {
 			audioFiles, err := processFileWithRouter(ctx, routerPool, job, workerTempDir)
 			if err != nil || len(audioFiles) == 0 {
-				processingError = fmt.Errorf("9router ล้มเหลว: %v", err)
+				fmt.Printf("⚠️ Worker %d: 9router ล้มเหลว ใช้ Google Translate TTS แทน: %v\n", workerID, err)
+				cleanTempFolder(workerTempDir)
+				if err := finishWithTranslateFallback(workerID, job, workerTempDir, err); err != nil {
+					processingError = err
+				}
 			} else {
 				fmt.Printf("🔗 Worker %d: กำลังรวมไฟล์เสียง %s...\n", workerID, filepath.Base(job.FilePath))
 				err = combineAudioFiles(workerTempDir, job.OutputPath)
@@ -375,14 +423,8 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 				err = combineAudioFiles(workerTempDir, job.OutputPath)
 				if err != nil {
 					processingError = fmt.Errorf("ไม่สามารถรวมไฟล์เสียงได้: %v", err)
-				} else {
-					// ปรับความเร็วไฟล์เสียง
-					err = adjustAudioSpeed(job.OutputPath, job.OutputPath, audioSpeed, voiceFX)
-					if err != nil {
-						fmt.Printf("⚠️ Worker %d: ไม่สามารถปรับความเร็วได้: %s\n", workerID, err.Error())
-					} else {
-						fmt.Printf("⚡ Worker %d: ปรับความเร็วเสร็จสิ้น (%.2fx)\n", workerID, audioSpeed)
-					}
+				} else if err = speedUpTranslateAudio(job.OutputPath, translateFallbackSpeed); err != nil {
+					processingError = fmt.Errorf("ไม่สามารถเร่งความเร็วได้: %v", err)
 				}
 			}
 		}
@@ -413,6 +455,81 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 	fmt.Printf("🏁 Worker %d เสร็จสิ้นงาน\n", workerID)
 }
 
+// parseChapterSet แปลง "102,218,51-60" เป็นชุดเลขตอน ค่าว่างหมายถึงทุกตอน
+func parseChapterSet(spec string) (map[int]struct{}, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	set := make(map[int]struct{})
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "-") {
+			bounds := strings.SplitN(part, "-", 2)
+			start, err := strconv.Atoi(strings.TrimSpace(bounds[0]))
+			if err != nil || start < 1 {
+				return nil, fmt.Errorf("invalid chapter range %q", part)
+			}
+			end, err := strconv.Atoi(strings.TrimSpace(bounds[1]))
+			if err != nil || end < start {
+				return nil, fmt.Errorf("invalid chapter range %q", part)
+			}
+			for n := start; n <= end; n++ {
+				set[n] = struct{}{}
+			}
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("invalid chapter number %q", part)
+		}
+		set[n] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil, fmt.Errorf("-only is empty")
+	}
+	return set, nil
+}
+
+func chapterNumber(path string) (int, bool) {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	n, err := strconv.Atoi(base)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+func filterChapters(files []string, selected map[int]struct{}) ([]string, []int) {
+	if selected == nil {
+		return files, nil
+	}
+	found := make(map[int]bool, len(selected))
+	filtered := make([]string, 0, len(selected))
+	for _, file := range files {
+		n, ok := chapterNumber(file)
+		if !ok {
+			continue
+		}
+		if _, want := selected[n]; !want {
+			continue
+		}
+		filtered = append(filtered, file)
+		found[n] = true
+	}
+	var missing []int
+	for n := range selected {
+		if !found[n] {
+			missing = append(missing, n)
+		}
+	}
+	sort.Ints(missing)
+	return filtered, missing
+}
+
 func parseEngine(name string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "auto":
@@ -433,6 +550,7 @@ func parseEngine(name string) (string, error) {
 func main() {
 	engineName := flag.String("engine", "", "tts engine: cloud, translate, edge, or router (default: cloud if credentials exist, otherwise translate)")
 	workers := flag.Int("workers", 4, "number of chapter files processed at once")
+	only := flag.String("only", "", "chapter numbers to process, comma-separated or ranges (e.g. 102,218,241,294 or 51-60); empty processes every chapter")
 	edgeURL := flag.String("edge-url", tts.DefaultEdgeURL, "edge-tts server base URL")
 	voice := flag.String("voice", tts.DefaultEdgeVoice, "edge-tts voice name")
 	flag.Parse()
@@ -445,13 +563,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	selected, err := parseChapterSet(*only)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := loadDotEnv(".env"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	// ตั้งค่าความเร็ว (1.0 = ปกติ, 1.3 = เร็วขึ้น 30%, 1.75 = เร็วขึ้น 75%)
-	const AUDIO_SPEED_MULTIPLIER = 1.0
+	const AUDIO_SPEED_MULTIPLIER = 1.25
 	// voice FX สำหรับหนังสือเสียง ("" = ไม่ใส่, clear, bright, warm, deep, soft, broadcast, room, mellow)
 	const VOICE_FX = ""
 
@@ -479,6 +602,13 @@ func main() {
 
 	// เรียงลำดับไฟล์
 	sort.Strings(files)
+	files, missingChapters := filterChapters(files, selected)
+	if len(missingChapters) > 0 {
+		fmt.Printf("⚠️ ไม่พบไฟล์บท: %v\n", missingChapters)
+	}
+	if len(files) == 0 {
+		panic("ไม่พบไฟล์บทตามที่ระบุใน -only")
+	}
 
 	fmt.Printf("📚 พบไฟล์ที่จะประมวลผล %d ไฟล์:\n", len(files))
 	for i, file := range files {

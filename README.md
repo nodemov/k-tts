@@ -123,7 +123,7 @@ go run . -engine edge -workers 4
 go run . -engine router -workers 4
 ```
 
-แต่ละก้อนข้อความไปคนละ VM พร้อมกัน สูงสุด 12 คำขอค้าง โมเดลคือ `edge-tts/<voice>` ไฟล์เสียงใช้ของ 9router ตามเดิม แล้วเร่งความเร็วตาม `AUDIO_SPEED_MULTIPLIER` โดยไม่ใส่ voice FX หรือ loudness เอนจิน Google ยังปรับทั้งความเร็วและ voice FX ตามค่าใน `main.go`
+แต่ละก้อนข้อความไปคนละ VM พร้อมกัน สูงสุด 12 คำขอค้าง โมเดลคือ `edge-tts/<voice>` ไฟล์เสียงใช้ของ 9router ตามเดิม แล้วเร่งความเร็วตาม `AUDIO_SPEED_MULTIPLIER` โดยไม่ใส่ voice FX หรือ loudness ถ้า 9router ล้มเหลว ทั้งตอนนั้นจะถอยไปใช้ Google Translate TTS แล้วเร่งเป็น 1.75x ด้วย `atempo` เอนจิน Google ยังปรับทั้งความเร็วและ voice FX ตามค่าใน `main.go`
 
 ### รวมไฟล์เสียงหลายตอนเป็นไฟล์เดียว
 
