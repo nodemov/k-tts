@@ -6,3 +6,5 @@ output-clear/*
 .env
 .env.local
 .env.*.local
+/chapters-clean/*
+.DS_Store
