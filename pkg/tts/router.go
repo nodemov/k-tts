@@ -19,7 +19,10 @@ const (
 	// RouterChunkLen is the max runes per request. Longer calls hit the public gateway timeout.
 	RouterChunkLen = 800
 
-	routerTimeout = 2 * time.Minute
+	// A healthy VM answers an 800-rune chunk in a few seconds; a stalled one is better retried elsewhere.
+	routerTimeout = time.Minute
+	// routerCooldown keeps a VM out of the pool after it fails so the retry lands on another VM.
+	routerCooldown = 15 * time.Second
 )
 
 // RouterWorker is one 9router VM and the API key created on that VM.
@@ -36,9 +39,10 @@ type RouterConfig struct {
 
 // RouterPool sends each speech request to one VM at a time.
 type RouterPool struct {
-	Voice string
-	HTTP  *http.Client
-	slots chan RouterWorker
+	Voice    string
+	HTTP     *http.Client
+	Cooldown time.Duration
+	slots    chan RouterWorker
 }
 
 type routerSpeechRequest struct {
@@ -146,8 +150,23 @@ func (p *RouterPool) Synthesize(ctx context.Context, text string) ([]byte, error
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	defer func() { p.slots <- worker }()
-	return p.post(ctx, worker, text)
+	audio, err := p.post(ctx, worker, text)
+	if err != nil && ctx.Err() == nil {
+		go func() {
+			time.Sleep(p.cooldown())
+			p.slots <- worker
+		}()
+		return nil, err
+	}
+	p.slots <- worker
+	return audio, err
+}
+
+func (p *RouterPool) cooldown() time.Duration {
+	if p.Cooldown > 0 {
+		return p.Cooldown
+	}
+	return routerCooldown
 }
 
 func (p *RouterPool) post(ctx context.Context, worker RouterWorker, text string) ([]byte, error) {

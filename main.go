@@ -32,6 +32,8 @@ type TTSResult struct {
 	Success bool
 	Error   error
 	Size    int64
+	// Fallback เป็น true เมื่อ 9router ล้มเหลวและไฟล์นี้ใช้เสียง Google Translate TTS แทน
+	Fallback bool
 }
 
 // ตรวจสอบและสร้าง folder
@@ -287,9 +289,12 @@ func processFileWithRouter(ctx context.Context, pool *tts.RouterPool, job TTSJob
 	return audioFiles, nil
 }
 
+// routerAttempts ต้องพอให้ข้ามช่วงที่ VM/Edge ขัดข้องชั่วคราว (502/timeout) ได้ ก่อนถอยไปใช้ Google Translate TTS
+const routerAttempts = 6
+
 func synthesizeRouterWithRetry(ctx context.Context, pool *tts.RouterPool, text string) ([]byte, error) {
 	var last error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= routerAttempts; attempt++ {
 		audio, err := pool.Synthesize(ctx, text)
 		if err == nil {
 			return audio, nil
@@ -302,10 +307,10 @@ func synthesizeRouterWithRetry(ctx context.Context, pool *tts.RouterPool, text s
 		if errors.As(err, &status) && !status.Retryable() {
 			return nil, err
 		}
-		if attempt < 3 {
+		if attempt < routerAttempts {
 			fmt.Printf("⚠️ 9router ล้มเหลว ลองใหม่ครั้งที่ %d: %s\n", attempt, err.Error())
 			select {
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(time.Duration(1<<attempt) * time.Second):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -331,7 +336,7 @@ func synthesizeEdgeWithRetry(ctx context.Context, client *tts.EdgeClient, text s
 }
 
 // TTS Worker function
-func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, client *texttospeech.Client, ctx context.Context, useCloudTTS bool, edgeClient *tts.EdgeClient, routerPool *tts.RouterPool, audioSpeed float64, voiceFX tts.VoiceFX) {
+func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, client *texttospeech.Client, ctx context.Context, useCloudTTS bool, edgeClient *tts.EdgeClient, routerPool *tts.RouterPool, routerFallback bool, audioSpeed float64, voiceFX tts.VoiceFX) {
 	fmt.Printf("🚀 Worker %d เริ่มทำงาน\n", workerID)
 
 	for job := range jobs {
@@ -347,14 +352,19 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 		cleanTempFolder(workerTempDir)
 
 		var processingError error
+		usedFallback := false
 
 		if routerPool != nil {
 			audioFiles, err := processFileWithRouter(ctx, routerPool, job, workerTempDir)
-			if err != nil || len(audioFiles) == 0 {
+			if (err != nil || len(audioFiles) == 0) && !routerFallback {
+				processingError = fmt.Errorf("9router ล้มเหลว: %v", err)
+			} else if err != nil || len(audioFiles) == 0 {
 				fmt.Printf("⚠️ Worker %d: 9router ล้มเหลว ใช้ Google Translate TTS แทน: %v\n", workerID, err)
 				cleanTempFolder(workerTempDir)
 				if err := finishWithTranslateFallback(workerID, job, workerTempDir, err); err != nil {
 					processingError = err
+				} else {
+					usedFallback = true
 				}
 			} else {
 				fmt.Printf("🔗 Worker %d: กำลังรวมไฟล์เสียง %s...\n", workerID, filepath.Base(job.FilePath))
@@ -445,10 +455,11 @@ func ttsWorker(workerID int, jobs <-chan TTSJob, results chan<- TTSResult, clien
 		}
 
 		results <- TTSResult{
-			Job:     job,
-			Success: processingError == nil,
-			Error:   processingError,
-			Size:    fileSize,
+			Job:      job,
+			Success:  processingError == nil,
+			Error:    processingError,
+			Size:     fileSize,
+			Fallback: usedFallback,
 		}
 	}
 
@@ -553,6 +564,7 @@ func main() {
 	only := flag.String("only", "", "chapter numbers to process, comma-separated or ranges (e.g. 102,218,241,294 or 51-60); empty processes every chapter")
 	edgeURL := flag.String("edge-url", tts.DefaultEdgeURL, "edge-tts server base URL")
 	voice := flag.String("voice", tts.DefaultEdgeVoice, "edge-tts voice name")
+	fallback := flag.Bool("fallback", true, "router engine: use Google Translate TTS for a chapter when 9router keeps failing (false marks the chapter failed instead)")
 	flag.Parse()
 	if *workers < 1 {
 		fmt.Fprintln(os.Stderr, "workers must be at least 1")
@@ -705,7 +717,7 @@ func main() {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			ttsWorker(id, jobsChan, resultsChan, client, ctx, useCloudTTS, edgeClient, routerPool, AUDIO_SPEED_MULTIPLIER, voiceFX)
+			ttsWorker(id, jobsChan, resultsChan, client, ctx, useCloudTTS, edgeClient, routerPool, *fallback, AUDIO_SPEED_MULTIPLIER, voiceFX)
 		}(workerID)
 	}
 
@@ -776,6 +788,24 @@ func main() {
 				fmt.Printf("   - %s: %s\n", filepath.Base(result.Job.FilePath), result.Error.Error())
 			}
 		}
+	}
+
+	var redo []int
+	for _, result := range results {
+		if result.Fallback || (routerPool != nil && !result.Success) {
+			if n, ok := chapterNumber(result.Job.FilePath); ok {
+				redo = append(redo, n)
+			}
+		}
+	}
+	if len(redo) > 0 {
+		sort.Ints(redo)
+		nums := make([]string, len(redo))
+		for i, n := range redo {
+			nums[i] = strconv.Itoa(n)
+		}
+		fmt.Printf("\n⚠️  %d ตอนไม่ได้ใช้เสียง 9router (ใช้ Google Translate TTS แทนหรือล้มเหลว) สั่งทำใหม่ด้วย:\n", len(redo))
+		fmt.Printf("   go run . -engine router -workers %d -only %s\n", *workers, strings.Join(nums, ","))
 	}
 
 	fmt.Printf("\n🏁 Multi-Worker TTS เสร็จสิ้น!\n")

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRouterWorkersFromEnvSkipsPlaceholders(t *testing.T) {
@@ -168,6 +169,36 @@ func TestRouterPoolReturnsStatusError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "API key required") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRouterPoolRetriesOnAnotherWorkerAfterFailure(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "error code: 502", http.StatusBadGateway)
+	}))
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer bad.Close()
+	defer good.Close()
+
+	pool, err := NewRouterPool([]RouterWorker{
+		{BaseURL: bad.URL, APIKey: "a"},
+		{BaseURL: good.URL, APIKey: "b"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Cooldown = time.Hour
+
+	if _, err := pool.Synthesize(context.Background(), "สวัสดี"); err == nil {
+		t.Fatal("expected the first worker to fail")
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := pool.Synthesize(context.Background(), "สวัสดี"); err != nil {
+			t.Fatalf("attempt %d reused the failed worker: %v", i+1, err)
+		}
 	}
 }
 
