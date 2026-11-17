@@ -18,7 +18,14 @@ var (
 	repeatPunctRe = regexp.MustCompile(`([!?])[!?]+`)
 	spaceBeforeRe = regexp.MustCompile(` +([,!?.:;”’)])`)
 	spaceAfterRe  = regexp.MustCompile(`([“‘(]) +`)
+	// "จริง ๆ" ให้ติดกันเป็น "จริงๆ" (Edge อ่านเหมือนกัน) เพื่อไม่ให้ท่อนที่ส่ง TTS ขึ้นต้นด้วย ๆ ซึ่งจะถูกอ่านเกินมา
+	maiYamokRe = regexp.MustCompile(` +ๆ`)
+	// เครื่องหมายจบบทท้ายตอน เช่น "(จบบท)", "จบบทนี้", "จบบท ทดลองใช้ฟรี" มีแค่บางตอน
+	// ไม่อ่านเพื่อให้หนังสือเสียงทุกตอนเหมือนกัน (ต้องมีช่องว่างหรือจบบรรทัดต่อท้าย เพื่อไม่ให้ตรงกับ "จบบทสนทนา")
+	endMarkerRe = regexp.MustCompile(`^\(?(จบบท|จบตอน)(นี้|ที่ ?\d+)?\)?[.!]?( |$)`)
 )
+
+const maxEndMarkerLen = 40
 
 // อักขระที่ไม่ต้องการให้ TTS อ่าน แทนที่ด้วยช่องว่าง
 var stripReplacer = strings.NewReplacer(
@@ -34,8 +41,9 @@ var stripReplacer = strings.NewReplacer(
 // FormatAudiobook แปลงข้อความบทนิยายให้อยู่ในรูปแบบสะอาดสำหรับหนังสือเสียง:
 //   - บรรทัดแรกเป็นชื่อบท (ถ้ามี) ตามด้วยบรรทัดว่าง
 //   - แต่ละย่อหน้าอยู่บรรทัดเดียว คั่นด้วยบรรทัดว่าง
-//   - ลบสัญลักษณ์/อีโมจิ/markup, เลขบทที่อยู่บรรทัดเดี่ยว และตัวคั่นฉาก (*** ... ---)
-//   - ยุบช่องว่างและเครื่องหมายวรรคตอนซ้ำ ๆ
+//   - ลบสัญลักษณ์/อีโมจิ/markup, เลขบทที่อยู่บรรทัดเดี่ยว, ตัวคั่นฉาก (*** ... ---),
+//     ชื่อบทที่ซ้ำ และ "(จบบท)" ท้ายตอน
+//   - ยุบช่องว่างและเครื่องหมายวรรคตอนซ้ำ ๆ และให้ ๆ ติดกับคำข้างหน้า
 func FormatAudiobook(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -67,11 +75,23 @@ func FormatAudiobook(text string) string {
 		line = spacesRe.ReplaceAllString(line, " ")
 		line = spaceBeforeRe.ReplaceAllString(line, "$1")
 		line = spaceAfterRe.ReplaceAllString(line, "$1")
+		line = maiYamokRe.ReplaceAllString(line, "ๆ")
 		line = strings.TrimSpace(line)
 		if line == "" || chapterLineRe.MatchString(line) || !hasSpeakableText(line) {
 			continue
 		}
 		paragraphs = append(paragraphs, line)
+	}
+	// บางตอนมีชื่อบทซ้ำสองบรรทัดติดกัน
+	if len(paragraphs) > 1 && paragraphs[0] == paragraphs[1] {
+		paragraphs = append(paragraphs[:1], paragraphs[2:]...)
+	}
+	for len(paragraphs) > 1 {
+		last := paragraphs[len(paragraphs)-1]
+		if !endMarkerRe.MatchString(last) || len([]rune(last)) > maxEndMarkerLen {
+			break
+		}
+		paragraphs = paragraphs[:len(paragraphs)-1]
 	}
 	return strings.Join(paragraphs, "\n\n")
 }

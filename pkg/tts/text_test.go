@@ -23,6 +23,20 @@ func TestFormatAudiobookLayout(t *testing.T) {
 	}
 }
 
+func TestFormatAudiobookJoinsMaiYamokAndDropsEndMarker(t *testing.T) {
+	in := "ตอนที่ 5 ทดสอบ\n\nตอนที่ 5 ทดสอบ\n\n(จบบท) เขาพูดจริง  ๆ นะ ช้า ๆ ๆ\n\n“ได้”\n\n“ได้”\n\nจบบทสนทนา\n\n(จบบทนี้)\n\nจบบท ทดลองใช้ฟรี\n"
+	got := FormatAudiobook(in)
+	want := "ตอนที่ 5 ทดสอบ\n\n(จบบท) เขาพูดจริงๆ นะ ช้าๆๆ\n\n“ได้”\n\n“ได้”\n\nจบบทสนทนา"
+	if got != want {
+		t.Fatalf("FormatAudiobook() = %q, want %q", got, want)
+	}
+	for _, part := range SplitText(FormatAudiobook(strings.Repeat("ไปกันเถอะ จริง ๆ ", 40)), 30) {
+		if strings.HasPrefix(part, "ๆ") {
+			t.Fatalf("part starts with ๆ: %q", part)
+		}
+	}
+}
+
 func TestSplitTextOnlyCutsAtSpaces(t *testing.T) {
 	// คำยาวที่ไม่มีช่องว่าง 30-60 ตัวอักษรคั่นด้วยช่องว่าง
 	words := []string{
