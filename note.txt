@@ -12,6 +12,8 @@ go run ./cmd/clean-chapters -parts -engine router
 
 # 3) แปลงข้อความเป็นเสียง -> output/0001.mp3 ...
 #    ทำใหม่เฉพาะบางตอน: เพิ่ม -only 51-60 หรือ -only 102,218
+#go run . -engine router -workers 12 -fallback=false
+
 go run . -engine router -workers 12
 
 # 4) รวมไฟล์เสียง ไฟล์ละ 50 ตอน -> output/combined/
